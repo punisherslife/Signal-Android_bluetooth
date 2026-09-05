@@ -1,0 +1,305 @@
+name: Build patched Signal release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional Signal tag (example: v8.25.2). Leave blank for latest stable."
+        required: false
+        type: string
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: signal-audio-fork-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preserve patch scripts
+        run: |
+          rm -rf /tmp/signal-audio-fork-kit
+          mkdir -p /tmp/signal-audio-fork-kit
+          cp -a patches /tmp/signal-audio-fork-kit/
+
+      - name: Resolve upstream Signal release
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUESTED='${{ inputs.upstream_tag }}'
+          if [[ -n "$REQUESTED" ]]; then
+            TAG="$REQUESTED"
+          else
+            TAG="$(gh api repos/signalapp/Signal-Android/releases/latest --jq '.tag_name')"
+          fi
+          RELEASE_TAG="fork-${TAG}-audio.3"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Signal upstream: $TAG"
+
+      - name: Check whether this upstream release is already published
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view '${{ steps.upstream.outputs.release_tag }}' >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch exact Signal tag
+        if: steps.existing.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ steps.upstream.outputs.tag }}:refs/tags/${{ steps.upstream.outputs.tag }}"
+          git checkout --detach "${{ steps.upstream.outputs.tag }}"
+
+      - name: Apply all call/audio patches
+        if: steps.existing.outputs.exists == 'false'
+        id: patches
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/signal-audio-fork-kit/patches/0001-hq-bluetooth.py "$GITHUB_WORKSPACE"
+          python /tmp/signal-audio-fork-kit/patches/0002-proximity-toggle.py "$GITHUB_WORKSPACE"
+          python /tmp/signal-audio-fork-kit/patches/0003-video-phone-speaker.py "$GITHUB_WORKSPACE"
+
+      - name: Open an issue if Signal source changed under the patches
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="Audio patches need update for ${{ steps.upstream.outputs.tag }}"
+          if ! gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            gh issue create \
+              --title "$TITLE" \
+              --body $'One of the automatic source patches did not apply cleanly to this Signal release.\n\nNo APK/release was published. This is intentional: the workflow refuses to guess when Signal changes its call/audio code.\n\nRe-run the workflow after updating the patch scripts against the new upstream source.'
+          fi
+          exit 1
+
+      - name: Verify patch diff
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+
+      - name: Set up Java 21
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK command-line tools
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Signal's requested Android SDK/NDK/build-tools
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              v = tomllib.load(f)['versions']
+          print('NDK_VERSION=' + repr(v['ndk']))
+          print('BUILD_TOOLS_VERSION=' + repr(v['buildTools']))
+          print('COMPILE_SDK=' + repr(v['compileSdk']))
+          PY
+          )"
+
+          echo "sdkmanager: $(command -v sdkmanager)"
+          echo "Signal requests compileSdk=$COMPILE_SDK, build-tools=$BUILD_TOOLS_VERSION, NDK=$NDK_VERSION"
+
+          # Android preview/minor platforms can use a .0 package suffix.
+          # API 37 currently installs as platforms;android-37.0.
+          SDK_LIST="$(mktemp)"
+          sdkmanager --list --channel=3 --include_obsolete > "$SDK_LIST"
+
+          candidates=(
+            "platforms;android-$COMPILE_SDK"
+            "platforms;android-$COMPILE_SDK.0"
+          )
+
+          PLATFORM_PACKAGE=""
+          for candidate in "${candidates[@]}"; do
+            if grep -Fq "$candidate" "$SDK_LIST"; then
+              PLATFORM_PACKAGE="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$PLATFORM_PACKAGE" ]]; then
+            echo "Could not find an SDK platform package for compileSdk $COMPILE_SDK." >&2
+            echo "Matching platform packages:" >&2
+            grep -E "platforms;android-${COMPILE_SDK}([.;[:space:]]|$)" "$SDK_LIST" || true
+            exit 1
+          fi
+
+          echo "Using Android platform package: $PLATFORM_PACKAGE"
+
+          packages=(
+            "$PLATFORM_PACKAGE"
+            "build-tools;$BUILD_TOOLS_VERSION"
+            "ndk;$NDK_VERSION"
+          )
+          sdkmanager --channel=3 "${packages[@]}"
+
+      - name: Prepare persistent fork signing key
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        shell: bash
+        env:
+          FORK_KEYSTORE_B64: ${{ secrets.FORK_KEYSTORE_B64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${FORK_KEYSTORE_B64:?Missing FORK_KEYSTORE_B64 repository secret}"
+          : "${FORK_KEYSTORE_PASSWORD:?Missing FORK_KEYSTORE_PASSWORD repository secret}"
+          : "${FORK_KEY_ALIAS:?Missing FORK_KEY_ALIAS repository secret}"
+          : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD repository secret}"
+
+          printf '%s' "$FORK_KEYSTORE_B64" | base64 --decode > fork-signing.jks
+          keytool -list \
+            -keystore fork-signing.jks \
+            -storepass "$FORK_KEYSTORE_PASSWORD" \
+            -alias "$FORK_KEY_ALIAS" >/dev/null
+
+      - name: Build optimized githubProdRelease APK
+        if: steps.existing.outputs.exists == 'false' && steps.patches.outcome == 'success'
+        id: assemble
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleGithubProdRelease --stacktrace
+
+      - name: Open an issue if the patched release no longer compiles
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="Patched Signal release build failed for ${{ steps.upstream.outputs.tag }}"
+          if ! gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            gh issue create \
+              --title "$TITLE" \
+              --body $'The source patches applied, but the optimized githubProdRelease build failed.\n\nNo release was published. Inspect the failed Actions run, update the patches if necessary, then re-run the workflow.'
+          fi
+          exit 1
+
+      - name: Sign release APK and create checksum
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        id: artifact
+        shell: bash
+        env:
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          BUILD_TOOLS_VERSION="$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              print(tomllib.load(f)['versions']['buildTools'])
+          PY
+          )"
+
+          ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+
+          mkdir -p dist
+
+          APK="$(find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          if [[ -z "$APK" ]]; then
+            echo "No release APK found" >&2
+            exit 1
+          fi
+
+          ALIGNED="dist/aligned-unsigned.apk"
+          OUT="dist/Signal-${{ steps.upstream.outputs.tag }}-audiofork-release.apk"
+
+          "$ZIPALIGN" -f -p 4 "$APK" "$ALIGNED"
+          "$APKSIGNER" sign \
+            --ks fork-signing.jks \
+            --ks-key-alias "$FORK_KEY_ALIAS" \
+            --ks-pass env:FORK_KEYSTORE_PASSWORD \
+            --key-pass env:FORK_KEY_PASSWORD \
+            --out "$OUT" \
+            "$ALIGNED"
+
+          "$APKSIGNER" verify --verbose --print-certs "$OUT"
+          rm -f "$ALIGNED"
+
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          echo "checksum=$OUT.sha256" >> "$GITHUB_OUTPUT"
+          ls -lh dist/
+
+      - name: Commit patched source
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f fork-signing.jks
+          git config user.name "signal-audio-fork-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit -m "Apply call audio patches to ${{ steps.upstream.outputs.tag }}"
+
+      - name: Push patched source branches and tag
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.upstream.outputs.tag }}'
+          RELEASE_TAG='${{ steps.upstream.outputs.release_tag }}'
+          git push --force origin HEAD:refs/heads/patched-stable
+          git push --force origin HEAD:refs/heads/generated/$TAG-audio
+          git tag -f "$RELEASE_TAG"
+          git push --force origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish GitHub release
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create '${{ steps.upstream.outputs.release_tag }}' \
+            '${{ steps.artifact.outputs.apk }}' \
+            '${{ steps.artifact.outputs.checksum }}' \
+            --title "Signal ${{ steps.upstream.outputs.tag }} + call audio patches" \
+            --notes $'Optimized githubProdRelease fork build based on the corresponding stable Signal Android release.\n\nChanges:\n- Per-call High quality Bluetooth audio toggle for classic Bluetooth (experimental; uses non-SCO media routing)\n- Per-call proximity sensor toggle\n- Phone/earpiece vs speaker selection remains available during video calls\n- Temporary overrides reset on audio-route changes and are not persisted\n\nThe APK is signed with this fork repository\'s persistent signing key, not Signal Messenger LLC\'s key.'
