@@ -1,0 +1,253 @@
+name: Build patched Signal release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional Signal tag (example: v8.25.2). Leave blank for latest stable."
+        required: false
+        type: string
+  schedule:
+    - cron: "23 */6 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: signal-audio-fork-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preserve patch scripts
+        run: |
+          rm -rf /tmp/signal-audio-fork-kit
+          mkdir -p /tmp/signal-audio-fork-kit
+          cp -a patches /tmp/signal-audio-fork-kit/
+
+      - name: Resolve upstream Signal release
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUESTED='${{ inputs.upstream_tag }}'
+          if [[ -n "$REQUESTED" ]]; then
+            TAG="$REQUESTED"
+          else
+            TAG="$(gh api repos/signalapp/Signal-Android/releases/latest --jq '.tag_name')"
+          fi
+          # Increment PATCHSET_REV whenever this kit changes behavior for the same Signal tag.
+          PATCHSET_REV=2
+          RELEASE_TAG="fork-${TAG}-audio.${PATCHSET_REV}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Signal upstream: $TAG"
+
+      - name: Check whether this upstream release is already published
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view '${{ steps.upstream.outputs.release_tag }}' >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch exact Signal tag
+        if: steps.existing.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ steps.upstream.outputs.tag }}:refs/tags/${{ steps.upstream.outputs.tag }}"
+          git checkout --detach "${{ steps.upstream.outputs.tag }}"
+
+      - name: Apply HQ Bluetooth patch
+        if: steps.existing.outputs.exists == 'false'
+        id: patch_bluetooth
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/signal-audio-fork-kit/patches/0001-hq-bluetooth.py "$GITHUB_WORKSPACE"
+
+      - name: Apply proximity patch
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success'
+        id: patch_proximity
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/signal-audio-fork-kit/patches/0002-proximity-toggle.py "$GITHUB_WORKSPACE"
+
+      - name: Apply video phone/speaker selector patch
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success'
+        id: patch_video_audio
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/signal-audio-fork-kit/patches/0003-video-phone-speaker.py "$GITHUB_WORKSPACE"
+
+      - name: Open an issue if Signal source changed under the patches
+        if: steps.existing.outputs.exists == 'false' && (steps.patch_bluetooth.outcome == 'failure' || steps.patch_proximity.outcome == 'failure' || steps.patch_video_audio.outcome == 'failure')
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="Audio patches need update for ${{ steps.upstream.outputs.tag }}"
+          if ! gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            gh issue create \
+              --title "$TITLE" \
+              --body $'The automatic source patch did not apply cleanly to this Signal release.\n\nNo APK/release was published. This is intentional: the workflow refuses to guess when Signal changes its call/audio code.\n\nRe-run the workflow after updating the patch scripts against the new upstream source.'
+          fi
+          exit 1
+
+      - name: Verify patch diff
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+
+      - name: Set up Java 21
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Signal's requested Android NDK/build-tools
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              v = tomllib.load(f)['versions']
+          print('NDK_VERSION=' + repr(v['ndk']))
+          print('BUILD_TOOLS_VERSION=' + repr(v['buildTools']))
+          PY
+          )"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "ndk;$NDK_VERSION" "build-tools;$BUILD_TOOLS_VERSION"
+
+      - name: Configure persistent fork signing key
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        shell: bash
+        env:
+          FORK_KEYSTORE_B64: ${{ secrets.FORK_KEYSTORE_B64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${FORK_KEYSTORE_B64:?Missing FORK_KEYSTORE_B64 repository secret}"
+          : "${FORK_KEYSTORE_PASSWORD:?Missing FORK_KEYSTORE_PASSWORD repository secret}"
+          : "${FORK_KEY_ALIAS:?Missing FORK_KEY_ALIAS repository secret}"
+          : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD repository secret}"
+
+          printf '%s' "$FORK_KEYSTORE_B64" | base64 --decode > fork-signing.jks
+          cat > keystore.debug.properties <<EOF
+          storeFile=fork-signing.jks
+          storePassword=$FORK_KEYSTORE_PASSWORD
+          keyAlias=$FORK_KEY_ALIAS
+          keyPassword=$FORK_KEY_PASSWORD
+          EOF
+          keytool -list -keystore fork-signing.jks -storepass "$FORK_KEYSTORE_PASSWORD" -alias "$FORK_KEY_ALIAS" >/dev/null
+
+      - name: Build signed universal Spinner APK
+        if: steps.existing.outputs.exists == 'false' && steps.patch_bluetooth.outcome == 'success' && steps.patch_proximity.outcome == 'success' && steps.patch_video_audio.outcome == 'success'
+        id: assemble
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleGithubProdSpinner --stacktrace
+
+      - name: Open an issue if the patched release no longer compiles
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="Patched Signal build failed for ${{ steps.upstream.outputs.tag }}"
+          if ! gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -Fxq "$TITLE"; then
+            gh issue create \
+              --title "$TITLE" \
+              --body $'The source patches applied, but Signal no longer compiled with them.\n\nNo release was published. Inspect the failed Actions run, update the patch scripts, then re-run the workflow.'
+          fi
+          exit 1
+
+      - name: Collect universal APK and checksum
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          APK="$(find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          if [[ -z "$APK" ]]; then
+            echo "No APK found" >&2
+            exit 1
+          fi
+          OUT="dist/Signal-${{ steps.upstream.outputs.tag }}-audiofork.apk"
+          cp "$APK" "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          echo "checksum=$OUT.sha256" >> "$GITHUB_OUTPUT"
+          ls -lh dist/
+
+      - name: Commit patched source
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f fork-signing.jks keystore.debug.properties
+          git config user.name "signal-audio-fork-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Apply call audio patches to ${{ steps.upstream.outputs.tag }}"
+
+      - name: Push patched source branches and tag
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.upstream.outputs.tag }}'
+          RELEASE_TAG='${{ steps.upstream.outputs.release_tag }}'
+          git push --force origin HEAD:refs/heads/patched-stable
+          git push --force origin HEAD:refs/heads/generated/$TAG-audio
+          git tag -f "$RELEASE_TAG"
+          git push --force origin "refs/tags/$RELEASE_TAG"
+
+      - name: Publish GitHub release
+        if: steps.existing.outputs.exists == 'false' && steps.assemble.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create '${{ steps.upstream.outputs.release_tag }}' \
+            '${{ steps.artifact.outputs.apk }}' \
+            '${{ steps.artifact.outputs.checksum }}' \
+            --title "Signal ${{ steps.upstream.outputs.tag }} + call audio patches" \
+            --notes $'Fork build based on the corresponding stable Signal Android release.\n\nChanges:\n- Per-call High quality Bluetooth audio toggle for classic Bluetooth (experimental; uses non-SCO media routing)\n- Per-call proximity sensor toggle\n- Both overrides reset on audio-route changes and are not persisted\n- Audio output picker remains available during video, including Phone/earpiece and Speaker without a connected headset\n\nThe APK is signed with this fork repository\'s persistent signing key, not Signal Messenger LLC\'s key.'
