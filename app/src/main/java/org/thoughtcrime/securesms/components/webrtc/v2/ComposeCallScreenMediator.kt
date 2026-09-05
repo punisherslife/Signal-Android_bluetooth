@@ -48,9 +48,11 @@ import org.thoughtcrime.securesms.events.WebRtcViewModel
 import org.thoughtcrime.securesms.keyvalue.SignalStore
 import org.thoughtcrime.securesms.reactions.any.ReactWithAnyEmojiBottomSheetDialogFragment
 import org.thoughtcrime.securesms.recipients.Recipient
+import org.thoughtcrime.securesms.service.webrtc.ActiveCallManager
 import org.thoughtcrime.securesms.service.webrtc.links.UpdateCallLinkResult
 import org.thoughtcrime.securesms.service.webrtc.state.WebRtcEphemeralState
 import org.thoughtcrime.securesms.webrtc.CallParticipantsViewState
+import org.thoughtcrime.securesms.webrtc.audio.AudioManagerCommand
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -174,6 +176,14 @@ class ComposeCallScreenMediator(private val activity: WebRtcCallActivity, viewMo
 
       LaunchedEffect(isLocalScreenSharing) {
         callScreenViewModel.callScreenState.update { it.copy(isLocalScreenSharing = isLocalScreenSharing) }
+      }
+      LaunchedEffect(callControlsState.audioOutput) {
+        callScreenViewModel.callScreenState.update {
+          it.copy(
+            highQualityBluetoothAudioEnabled = false,
+            proximityOverride = null
+          )
+        }
       }
 
       LaunchedEffect(callScreenController, callScreenControlsListener) {
@@ -411,6 +421,16 @@ class ComposeCallScreenMediator(private val activity: WebRtcCallActivity, viewMo
   override fun onRaiseHandClick(raised: Boolean) {
     AppDependencies.signalCallManager.raiseHand(raised)
     callScreenViewModel.callScreenState.update { it.copy(displayAdditionalActionsDialog = false) }
+  }
+
+  override fun onHighQualityBluetoothAudioClick(enabled: Boolean) {
+    ActiveCallManager.sendAudioManagerCommand(activity, AudioManagerCommand.SetHighQualityBluetoothAudio(enabled))
+    callScreenViewModel.callScreenState.update { it.copy(highQualityBluetoothAudioEnabled = enabled) }
+  }
+
+  override fun onProximitySensorClick(enabled: Boolean) {
+    AppDependencies.signalCallManager.setProximityOverride(enabled)
+    callScreenViewModel.callScreenState.update { it.copy(proximityOverride = enabled) }
   }
 
   override fun onScreenShareClick(sharing: Boolean) {

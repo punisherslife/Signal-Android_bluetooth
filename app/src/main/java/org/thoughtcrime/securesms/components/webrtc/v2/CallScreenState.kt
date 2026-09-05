@@ -35,7 +35,9 @@ data class CallScreenState(
   val isCallStateUpdatePopupEnabled: Boolean = false,
   val isWaitingToBeLetIn: Boolean = false,
   val reactions: PersistentList<String> = persistentListOf(),
-  val isLocalScreenSharing: Boolean = false
+  val isLocalScreenSharing: Boolean = false,
+  val highQualityBluetoothAudioEnabled: Boolean = false,
+  val proximityOverride: Boolean? = null
 ) {
   fun isDisplayingControlMenu(): Boolean = isDisplayingAudioToggleSheet || displayAdditionalActionsDialog
 }

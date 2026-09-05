@@ -69,6 +69,7 @@ import org.signal.core.ui.compose.theme.SignalTheme
 import org.signal.core.util.DimensionUnit
 import org.signal.emoji.EmojiStrings
 import org.thoughtcrime.securesms.R
+import org.thoughtcrime.securesms.components.webrtc.WebRtcAudioOutput
 import org.thoughtcrime.securesms.components.webrtc.WebRtcLocalRenderState
 import org.thoughtcrime.securesms.components.webrtc.controls.RaiseHandSnackbar
 import org.thoughtcrime.securesms.conversation.colors.ChatColorsPalette
@@ -176,13 +177,19 @@ fun CallScreen(
     callScreenState.reactions,
     localParticipant.isHandRaised,
     callScreenState.isLocalScreenSharing,
-    callControlsState.displayEndCallButton
+    callScreenState.highQualityBluetoothAudioEnabled,
+    callScreenState.proximityOverride,
+    callControlsState.displayEndCallButton,
+    callControlsState.audioOutput
   ) {
     AdditionalActionsState(
       reactions = callScreenState.reactions,
       isSelfHandRaised = localParticipant.isHandRaised,
       isScreenSharing = callScreenState.isLocalScreenSharing,
       displayScreenShareToggle = callControlsState.displayEndCallButton && RemoteConfig.screenSharing,
+      displayHighQualityBluetoothToggle = callControlsState.audioOutput == WebRtcAudioOutput.BLUETOOTH_HEADSET,
+      isHighQualityBluetoothAudioEnabled = callScreenState.highQualityBluetoothAudioEnabled,
+      isProximitySensorEnabled = callScreenState.proximityOverride ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),
       isGroupCall = callControlsState.isGroupCall,
       listener = additionalActionsListener,
       triggerAlignedPopupState = additionalActionsPopupState

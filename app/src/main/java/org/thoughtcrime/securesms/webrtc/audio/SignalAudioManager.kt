@@ -25,7 +25,6 @@ import org.thoughtcrime.securesms.audio.AudioDeviceUpdatedListener
 import org.thoughtcrime.securesms.audio.SignalBluetoothManager
 import org.thoughtcrime.securesms.dependencies.AppDependencies
 import org.thoughtcrime.securesms.recipients.RecipientId
-import org.thoughtcrime.securesms.service.webrtc.AndroidTelecomUtil
 
 private val TAG = Log.tag(SignalAudioManager::class.java)
 
@@ -39,6 +38,7 @@ sealed class SignalAudioManager(protected val context: Context, protected val ev
   protected val androidAudioManager = AppDependencies.androidCallAudioManager
 
   protected var selectedAudioDevice: AudioDevice = AudioDevice.NONE
+  protected var hqBluetoothAudioEnabled = false
 
   protected val soundPool: SoundPool = androidAudioManager.createSoundPool()
   protected val connectedSoundId = soundPool.load(context, R.raw.webrtc_completed, 1)
@@ -77,9 +77,10 @@ sealed class SignalAudioManager(protected val context: Context, protected val ev
     @SuppressLint("NewApi")
     @JvmStatic
     fun create(context: Context, eventListener: EventListener?, canUseTelecom: Boolean): SignalAudioManager {
-      return if (canUseTelecom && AndroidTelecomUtil.telecomSupported) {
-        TelecomAudioManager(context, eventListener)
-      } else if (Build.VERSION.SDK_INT >= 31) {
+      if (canUseTelecom) {
+        Log.i(TAG, "Jetpack Telecom audio routing disabled by fork HQ Bluetooth patch")
+      }
+      return if (Build.VERSION.SDK_INT >= 31) {
         FullSignalAudioManagerApi31(context, eventListener)
       } else {
         FullSignalAudioManager(context, eventListener)
@@ -96,7 +97,13 @@ sealed class SignalAudioManager(protected val context: Context, protected val ev
         is AudioManagerCommand.Start -> start()
         is AudioManagerCommand.Stop -> stop(command.playDisconnect)
         is AudioManagerCommand.SetDefaultDevice -> setDefaultAudioDevice(command.recipientId, command.device, command.clearUserEarpieceSelection)
-        is AudioManagerCommand.SetUserDevice -> selectAudioDevice(command.recipientId, command.device, command.isId)
+        is AudioManagerCommand.SetUserDevice -> {
+          if (hqBluetoothAudioEnabled) {
+            setHighQualityBluetoothAudio(false)
+          }
+          selectAudioDevice(command.recipientId, command.device, command.isId)
+        }
+        is AudioManagerCommand.SetHighQualityBluetoothAudio -> setHighQualityBluetoothAudio(command.enabled)
         is AudioManagerCommand.StartIncomingRinger -> startIncomingRinger(command.ringtoneUri, command.vibrate)
         is AudioManagerCommand.SilenceIncomingRinger -> silenceIncomingRinger()
         is AudioManagerCommand.StartOutgoingRinger -> startOutgoingRinger()
@@ -158,6 +165,9 @@ sealed class SignalAudioManager(protected val context: Context, protected val ev
   protected abstract fun stop(playDisconnect: Boolean)
   protected abstract fun setDefaultAudioDevice(recipientId: RecipientId?, newDefaultDevice: AudioDevice, clearUserEarpieceSelection: Boolean)
   protected abstract fun selectAudioDevice(recipientId: RecipientId?, device: Int, isId: Boolean)
+  protected open fun setHighQualityBluetoothAudio(enabled: Boolean) {
+    hqBluetoothAudioEnabled = enabled
+  }
 
   /** Must end in [notifyReadyForAccept]; otherwise the accept waits for [ACCEPT_GATE_TIMEOUT_MS]. */
   protected open fun onPrepareForAccept() {
@@ -386,6 +396,24 @@ class FullSignalAudioManager(context: Context, eventListener: EventListener?) : 
     Log.i(TAG, "stop(): complete")
   }
 
+  override fun setHighQualityBluetoothAudio(enabled: Boolean) {
+    if (hqBluetoothAudioEnabled == enabled) {
+      return
+    }
+
+    hqBluetoothAudioEnabled = enabled
+    if (enabled) {
+      Log.i(TAG, "HQ Bluetooth enabled: stopping SCO and leaving communication mode")
+      signalBluetoothManager.stopScoAudio()
+      setMode(AudioManager.MODE_NORMAL, "setHighQualityBluetoothAudio")
+    } else if (state != State.UNINITIALIZED) {
+      Log.i(TAG, "HQ Bluetooth disabled: restoring communication mode")
+      setMode(AudioManager.MODE_IN_COMMUNICATION, "setHighQualityBluetoothAudio")
+    }
+
+    onAudioDeviceUpdated()
+  }
+
   override fun onAudioDeviceUpdated() {
     handler.assertHandlerThread()
 
@@ -434,7 +462,7 @@ class FullSignalAudioManager(context: Context, eventListener: EventListener?) : 
       userSelectedAudioDevice = AudioDevice.NONE
     }
 
-    val needBluetoothAudioStart = signalBluetoothManager.state == SignalBluetoothManager.State.AVAILABLE &&
+    val needBluetoothAudioStart = !hqBluetoothAudioEnabled && signalBluetoothManager.state == SignalBluetoothManager.State.AVAILABLE &&
       (userSelectedAudioDevice == AudioDevice.NONE || userSelectedAudioDevice == AudioDevice.BLUETOOTH || autoSwitchToBluetooth) &&
       !androidAudioManager.isBluetoothScoOn
 

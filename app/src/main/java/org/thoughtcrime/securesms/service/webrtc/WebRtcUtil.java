@@ -47,10 +47,11 @@ public final class WebRtcUtil {
    * Otherwise, falls back to audio-device based phone state.
    */
   public static @NonNull LockManager.PhoneState getInCallPhoneState(@NonNull Context context, boolean localVideoEnabled, boolean remoteVideoEnabled) {
+    LockManager.PhoneState audioState = getInCallPhoneState(context);
     if (localVideoEnabled || remoteVideoEnabled) {
-      return LockManager.PhoneState.IN_VIDEO;
+      return audioState == LockManager.PhoneState.IN_CALL ? LockManager.PhoneState.IN_CALL : LockManager.PhoneState.IN_VIDEO;
     }
-    return getInCallPhoneState(context);
+    return audioState;
   }
 
   public static @NonNull CallManager.CallMediaType getCallMediaTypeFromOfferType(@NonNull OfferMessage.Type offerType) {

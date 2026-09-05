@@ -106,6 +106,17 @@ sealed class AudioManagerCommand : Parcelable {
     }
   }
 
+  class SetHighQualityBluetoothAudio(val enabled: Boolean) : AudioManagerCommand() {
+    override fun writeToParcel(parcel: Parcel, flags: Int) {
+      ParcelUtil.writeBoolean(parcel, enabled)
+    }
+
+    companion object {
+      @JvmField
+      val CREATOR: Parcelable.Creator<SetHighQualityBluetoothAudio> = ParcelCheat { SetHighQualityBluetoothAudio(ParcelUtil.readBoolean(it)) }
+    }
+  }
+
   class SetDefaultDevice(val recipientId: RecipientId?, val device: SignalAudioManager.AudioDevice, val clearUserEarpieceSelection: Boolean) : AudioManagerCommand() {
     override fun writeToParcel(parcel: Parcel, flags: Int) {
       parcel.writeParcelable(recipientId, flags)
