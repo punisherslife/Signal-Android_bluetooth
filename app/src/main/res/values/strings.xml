@@ -2665,6 +2665,10 @@
     <string name="CallOverflowPopupWindow__cancel">Cancel</string>
     <!-- A clickable button to share your screen in a call -->
     <string name="CallOverflowPopupWindow__share_screen">Share screen</string>
+    <!-- A temporary call switch that avoids classic Bluetooth SCO communication routing to prefer media-quality playback. -->
+    <string name="CallOverflowPopupWindow__high_quality_bluetooth_audio">High quality Bluetooth audio</string>
+    <!-- A temporary call switch overriding the route-derived proximity sensor behavior. -->
+    <string name="CallOverflowPopupWindow__proximity_sensor">Proximity sensor</string>
     <!-- A clickable button to stop sharing your screen in a call -->
     <string name="CallOverflowPopupWindow__stop_screen_share">Stop sharing</string>
     <!-- A button to take you to a list of participants with raised hands -->

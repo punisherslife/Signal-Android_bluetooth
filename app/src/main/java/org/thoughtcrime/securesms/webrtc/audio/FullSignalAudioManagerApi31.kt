@@ -25,6 +25,7 @@ class FullSignalAudioManagerApi31(context: Context, eventListener: EventListener
   private var hasWiredHeadset = false
 
   private var appliedCommunicationDeviceId: Int? = null
+  private var highQualityBluetoothDeviceId: Int? = null
 
   private val deviceCallback = object : AudioDeviceCallback() {
 
@@ -218,6 +219,41 @@ class FullSignalAudioManagerApi31(context: Context, eventListener: EventListener
     Log.i(TAG, "stop: complete. mode: ${getModeName(requestedMode)}")
   }
 
+  override fun setHighQualityBluetoothAudio(enabled: Boolean) {
+    if (hqBluetoothAudioEnabled == enabled) {
+      return
+    }
+
+    if (enabled) {
+      val bluetoothDevice = (userSelectedAudioDevice ?: androidAudioManager.communicationDevice)
+        ?.takeIf { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+
+      if (bluetoothDevice == null) {
+        Log.w(TAG, "HQ Bluetooth requested without an active classic Bluetooth SCO device")
+        return
+      }
+
+      hqBluetoothAudioEnabled = true
+      highQualityBluetoothDeviceId = bluetoothDevice.id
+      androidAudioManager.clearCommunicationDevice()
+      appliedCommunicationDeviceId = null
+      setMode(AudioManager.MODE_NORMAL, "setHighQualityBluetoothAudio")
+
+      val available = androidAudioManager.availableCommunicationDevices
+      eventListener?.onAudioDeviceChanged(
+        AudioDevice.BLUETOOTH,
+        available.map { AudioDeviceMapping.fromPlatformType(it.type) }.toSet()
+      )
+    } else {
+      hqBluetoothAudioEnabled = false
+      highQualityBluetoothDeviceId = null
+      if (state != State.UNINITIALIZED) {
+        setMode(AudioManager.MODE_IN_COMMUNICATION, "setHighQualityBluetoothAudio")
+      }
+      updateAudioDeviceState()
+    }
+  }
+
   override fun selectAudioDevice(recipientId: RecipientId?, device: Int, isId: Boolean) {
     if (!isId) {
       throw IllegalArgumentException("Must supply a device address for API 31+.")
@@ -250,6 +286,34 @@ class FullSignalAudioManagerApi31(context: Context, eventListener: EventListener
         "    current: ${describeDevice(currentAudioDevice)}\n" +
         "    available: ${describeDevices(availableCommunicationDevices)}"
     )
+
+    if (hqBluetoothAudioEnabled) {
+      val bluetoothDeviceStillAvailable = availableCommunicationDevices.any {
+        it.id == highQualityBluetoothDeviceId && it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+      }
+
+      if (bluetoothDeviceStillAvailable) {
+        if (androidAudioManager.communicationDevice != null) {
+          androidAudioManager.clearCommunicationDevice()
+          appliedCommunicationDeviceId = null
+        }
+        if (requestedMode != AudioManager.MODE_NORMAL) {
+          setMode(AudioManager.MODE_NORMAL, "updateAudioDeviceState-hqBluetooth")
+        }
+        eventListener?.onAudioDeviceChanged(
+          AudioDevice.BLUETOOTH,
+          availableCommunicationDevices.map { AudioDeviceMapping.fromPlatformType(it.type) }.toSet()
+        )
+        return
+      } else {
+        Log.i(TAG, "HQ Bluetooth target disappeared; restoring normal call routing")
+        hqBluetoothAudioEnabled = false
+        highQualityBluetoothDeviceId = null
+        if (state != State.UNINITIALIZED) {
+          setMode(AudioManager.MODE_IN_COMMUNICATION, "updateAudioDeviceState-hqBluetooth-ended")
+        }
+      }
+    }
 
     if (userSelectedAudioDevice != null && availableCommunicationDevices.none { it.id == userSelectedAudioDevice?.id }) {
       Log.w(TAG, "User selected device ${userSelectedAudioDevice?.id} of type ${userSelectedAudioDevice?.type?.let { getDeviceTypeName(it) }} is no longer available. Clearing user selection.")

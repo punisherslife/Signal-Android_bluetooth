@@ -21,6 +21,8 @@ public class LockManager {
   private final ProximityLock         proximityLock;
 
   private boolean     proximityDisabled = false;
+  private Boolean     proximityOverride = null;
+  private PhoneState  currentPhoneState = PhoneState.IDLE;
 
   public enum PhoneState {
     IDLE,
@@ -60,9 +62,26 @@ public class LockManager {
     }
   }
 
-  public void updatePhoneState(PhoneState state) {
+  public synchronized void setProximityOverride(boolean enabled) {
+    proximityOverride = enabled;
+    applyPhoneState(currentPhoneState);
+  }
+
+  public synchronized void clearProximityOverride() {
+    proximityOverride = null;
+    applyPhoneState(currentPhoneState);
+  }
+
+  public synchronized void updatePhoneState(PhoneState state) {
+    currentPhoneState = state;
+    applyPhoneState(state);
+  }
+
+  private void applyPhoneState(PhoneState state) {
     switch(state) {
       case IDLE:
+        proximityOverride = null;
+        proximityDisabled = false;
         setLockState(LockState.SLEEP);
         break;
       case PROCESSING:
@@ -72,15 +91,20 @@ public class LockManager {
         setLockState(LockState.FULL);
         break;
       case IN_HANDS_FREE_CALL:
-        setLockState(LockState.PARTIAL);
-        proximityDisabled = true;
+        if (Boolean.TRUE.equals(proximityOverride)) {
+          proximityDisabled = false;
+          updateInCallLockState();
+        } else {
+          proximityDisabled = true;
+          setLockState(LockState.PARTIAL);
+        }
         break;
       case IN_VIDEO:
-        proximityDisabled = true;
+        proximityDisabled = !Boolean.TRUE.equals(proximityOverride);
         updateInCallLockState();
         break;
       case IN_CALL:
-        proximityDisabled = false;
+        proximityDisabled = Boolean.FALSE.equals(proximityOverride);
         updateInCallLockState();
         break;
     }

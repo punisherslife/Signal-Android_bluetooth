@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
@@ -48,6 +49,9 @@ data class AdditionalActionsState(
   val isSelfHandRaised: Boolean = false,
   val isScreenSharing: Boolean = false,
   val displayScreenShareToggle: Boolean = false,
+  val displayHighQualityBluetoothToggle: Boolean = false,
+  val isHighQualityBluetoothAudioEnabled: Boolean = false,
+  val isProximitySensorEnabled: Boolean = false,
   val isGroupCall: Boolean = true,
   @Stable val listener: AdditionalActionsListener = AdditionalActionsListener.Empty
 )
@@ -57,12 +61,16 @@ interface AdditionalActionsListener {
   fun onReactWithAnyClick()
   fun onRaiseHandClick(raised: Boolean)
   fun onScreenShareClick(sharing: Boolean)
+  fun onHighQualityBluetoothAudioClick(enabled: Boolean)
+  fun onProximitySensorClick(enabled: Boolean)
 
   object Empty : AdditionalActionsListener {
     override fun onReactClick(reaction: String) = Unit
     override fun onReactWithAnyClick() = Unit
     override fun onRaiseHandClick(raised: Boolean) = Unit
     override fun onScreenShareClick(sharing: Boolean) = Unit
+    override fun onHighQualityBluetoothAudioClick(enabled: Boolean) = Unit
+    override fun onProximitySensorClick(enabled: Boolean) = Unit
   }
 }
 
@@ -102,7 +110,12 @@ private fun AdditionalActionsPopupContent(
       isSelfHandRaised = state.isSelfHandRaised,
       isScreenSharing = state.isScreenSharing,
       displayScreenShareToggle = state.displayScreenShareToggle,
-      onScreenShareClick = state.listener::onScreenShareClick
+      onScreenShareClick = state.listener::onScreenShareClick,
+      displayHighQualityBluetoothToggle = state.displayHighQualityBluetoothToggle,
+      isHighQualityBluetoothAudioEnabled = state.isHighQualityBluetoothAudioEnabled,
+      onHighQualityBluetoothAudioClick = state.listener::onHighQualityBluetoothAudioClick,
+      isProximitySensorEnabled = state.isProximitySensorEnabled,
+      onProximitySensorClick = state.listener::onProximitySensorClick
     )
   }
 }
@@ -150,7 +163,12 @@ private fun CallScreenMenu(
   onRaiseHandClick: (Boolean) -> Unit,
   isScreenSharing: Boolean = false,
   displayScreenShareToggle: Boolean = false,
-  onScreenShareClick: (Boolean) -> Unit = {}
+  onScreenShareClick: (Boolean) -> Unit = {},
+  displayHighQualityBluetoothToggle: Boolean = false,
+  isHighQualityBluetoothAudioEnabled: Boolean = false,
+  onHighQualityBluetoothAudioClick: (Boolean) -> Unit = {},
+  isProximitySensorEnabled: Boolean = false,
+  onProximitySensorClick: (Boolean) -> Unit = {}
 ) {
   Column(
     modifier = Modifier
@@ -172,6 +190,46 @@ private fun CallScreenMenu(
         onClick = { onScreenShareClick(!isScreenSharing) }
       )
     }
+    if (displayHighQualityBluetoothToggle) {
+      CallScreenMenuToggle(
+        title = stringResource(R.string.CallOverflowPopupWindow__high_quality_bluetooth_audio),
+        checked = isHighQualityBluetoothAudioEnabled,
+        onCheckedChange = onHighQualityBluetoothAudioClick
+      )
+    }
+    CallScreenMenuToggle(
+      title = stringResource(R.string.CallOverflowPopupWindow__proximity_sensor),
+      checked = isProximitySensorEnabled,
+      onCheckedChange = onProximitySensorClick
+    )
+  }
+}
+
+@Composable
+private fun CallScreenMenuToggle(
+  title: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit
+) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = spacedBy(16.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(18.dp))
+      .clickable { onCheckedChange(!checked) }
+      .padding(horizontal = 16.dp, vertical = 8.dp)
+  ) {
+    Text(
+      text = title,
+      style = MaterialTheme.typography.bodyLarge,
+      color = MaterialTheme.colorScheme.onSurface,
+      modifier = Modifier.weight(1f)
+    )
+    Switch(
+      checked = checked,
+      onCheckedChange = null
+    )
   }
 }
 

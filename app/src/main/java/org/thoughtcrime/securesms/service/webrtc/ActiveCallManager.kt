@@ -143,6 +143,7 @@ class ActiveCallManager(
   private var powerButtonReceiver: PowerButtonReceiver? = null
   private var uncaughtExceptionHandlerManager: UncaughtExceptionHandlerManager? = null
   private var signalAudioManager: SignalAudioManager? = null
+  private var previousAudioDevice: SignalAudioManager.AudioDevice? = null
   private var previousNotificationId = -1
   private var previousNotificationDisposable = Disposable.disposed()
 
@@ -166,6 +167,7 @@ class ActiveCallManager(
 
     signalAudioManager?.shutdown()
     signalAudioManager = null
+    callManager.lockManager.clearProximityOverride()
 
     unregisterNetworkReceiver()
     unregisterPowerButtonReceiver()
@@ -269,6 +271,14 @@ class ActiveCallManager(
   }
 
   override fun onAudioDeviceChanged(activeDevice: SignalAudioManager.AudioDevice, devices: Set<SignalAudioManager.AudioDevice>) {
+    val routeChanged = previousAudioDevice != null && previousAudioDevice != activeDevice
+    previousAudioDevice = activeDevice
+
+    if (routeChanged) {
+      signalAudioManager?.handleCommand(AudioManagerCommand.SetHighQualityBluetoothAudio(false))
+      callManager.lockManager.clearProximityOverride()
+    }
+
     callManager.onAudioDeviceChanged(activeDevice, devices)
   }
 

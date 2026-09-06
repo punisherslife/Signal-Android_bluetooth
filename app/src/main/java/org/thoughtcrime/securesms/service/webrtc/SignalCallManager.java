@@ -1487,4 +1487,13 @@ public final class SignalCallManager implements CallManager.Observer, GroupCall.
   interface ProcessAction {
     @NonNull WebRtcServiceState process(@NonNull WebRtcServiceState currentState, @NonNull WebRtcActionProcessor processor);
   }
+
+  public void setProximityOverride(boolean enabled) {
+    lockManager.setProximityOverride(enabled);
+  }
+
+  public void clearProximityOverride() {
+    lockManager.clearProximityOverride();
+  }
+
 }
