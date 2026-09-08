@@ -1,0 +1,90 @@
+/*
+ * Resolve only Signal's RingRTC Maven module for the HQ call-gain experiment.
+ *
+ * Do NOT resolve githubProdReleaseRuntimeClasspath here. On AGP 9.x that full
+ * application graph contains project variants that are intentionally selected
+ * by Android's normal build machinery and are ambiguous to this ad-hoc task.
+ * A detached configuration containing only RingRTC is both lighter and more
+ * robust, while still using Signal's normal repositories and dependency
+ * verification for the official artifact.
+ */
+gradle.projectsEvaluated {
+  def root = gradle.rootProject
+  def expectedAppDir = new File(root.rootDir, "app")
+
+  // Init scripts are also applied to included builds such as build-logic.
+  // Only the main Signal build has app/build.gradle.kts.
+  if (!new File(expectedAppDir, "build.gradle.kts").isFile()) {
+    return
+  }
+
+  def canonicalAppDir = expectedAppDir.canonicalFile
+  def app = root.allprojects.find { project ->
+    project.projectDir.canonicalFile == canonicalAppDir
+  }
+
+  if (app == null) {
+    throw new GradleException("Could not locate Signal app project at ${canonicalAppDir}")
+  }
+
+  app.tasks.register("copyHqGainRingRtc") {
+    doLast {
+      def catalogFile = new File(root.rootDir, "gradle/libs.versions.toml")
+      if (!catalogFile.isFile()) {
+        throw new GradleException("Could not find ${catalogFile}")
+      }
+
+      def matcher = catalogFile.getText("UTF-8") =~ /(?m)^\s*signal-ringrtc\s*=\s*"([^"]+)"\s*$/
+      if (!matcher.find()) {
+        throw new GradleException("Could not read signal-ringrtc coordinate from gradle/libs.versions.toml")
+      }
+
+      def coordinate = matcher.group(1)
+      def parts = coordinate.split(":")
+      if (parts.length != 3 || parts[0] != "org.signal" || parts[1] != "ringrtc-android") {
+        throw new GradleException("Unexpected signal-ringrtc coordinate: ${coordinate}")
+      }
+
+      def ringRtcDependency = app.dependencies.create(coordinate)
+      def configuration = app.configurations.detachedConfiguration(ringRtcDependency)
+      configuration.transitive = true
+
+      // This isolated configuration contains RingRTC and its Maven dependencies
+      // only. It never asks Gradle to resolve Signal's Android project modules.
+      def resolved = configuration.resolvedConfiguration
+      def artifact = resolved.resolvedArtifacts.find {
+        it.moduleVersion.id.group == parts[0] &&
+          it.moduleVersion.id.name == parts[1] &&
+          it.file.name.endsWith(".aar")
+      }
+      if (artifact == null) {
+        throw new GradleException("Detached RingRTC resolution did not produce the expected AAR for ${coordinate}")
+      }
+
+      def ringRtcNode = resolved.firstLevelModuleDependencies.find {
+        it.moduleGroup == parts[0] && it.moduleName == parts[1]
+      }
+      if (ringRtcNode == null) {
+        throw new GradleException("Detached RingRTC resolution did not produce a first-level dependency node for ${coordinate}")
+      }
+
+      def directDependencies = ringRtcNode.children.collect {
+        "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}"
+      }.unique().sort()
+
+      def outputDir = new File(app.buildDir, "hq-gain")
+      outputDir.mkdirs()
+      def output = new File(outputDir, "ringrtc-original.aar")
+      output.bytes = artifact.file.bytes
+
+      new File(outputDir, "ringrtc-version.txt").text = parts[2] + "\n"
+      new File(outputDir, "ringrtc-direct-dependencies.txt").text =
+        directDependencies.join("\n") + (directDependencies.isEmpty() ? "" : "\n")
+
+      println("HQ_GAIN_APP_PROJECT=" + app.path)
+      println("HQ_GAIN_RINGRTC=" + coordinate)
+      println("HQ_GAIN_AAR=" + output.absolutePath)
+      println("HQ_GAIN_DIRECT_DEPS=" + directDependencies.join(","))
+    }
+  }
+}
