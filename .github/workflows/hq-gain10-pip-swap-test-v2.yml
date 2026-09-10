@@ -1,0 +1,722 @@
+name: HQ gain 10 dB + PiP camera/swap test
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional Signal tag (example: v8.25.2). Leave blank for latest stable."
+        required: false
+        type: string
+      native_archs:
+        description: "Custom RingRTC/WebRTC native ABIs. arm64 is much faster for phone testing."
+        required: true
+        default: arm64
+        type: choice
+        options:
+          - arm64
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hq-gain10-pip-swap-test
+  cancel-in-progress: false
+
+jobs:
+  native_and_ci:
+    name: Build native AAR + ciRemote
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      upstream_tag: ${{ steps.upstream.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: true
+          lfs: true
+      - name: Preserve production patches, gain tooling, and strong-NS experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          rm -rf "$CONTROL"
+          mkdir -p "$CONTROL/patches" "$CONTROL/tools" "$CONTROL/live-ns"
+          cp patches/0001-hq-bluetooth.py "$CONTROL/patches/"
+          cp patches/0002-proximity-toggle.py "$CONTROL/patches/"
+          cp patches/0003-video-phone-speaker.py "$CONTROL/patches/"
+          cp patches/0004-hq-call-gain.py "$CONTROL/patches/"
+          cp patches/0005-strong-noise-suppression.py "$CONTROL/patches/"
+          cp patches/0006-hq-call-gain-10db-compressed.py "$CONTROL/patches/"
+          cp patches/0007-hide-self-camera-system-pip.py "$CONTROL/patches/"
+          cp patches/0008-one-to-one-video-swap.py "$CONTROL/patches/"
+          cp -R tools/hq-gain/. "$CONTROL/tools/"
+          cp -R tools/live-ns/. "$CONTROL/live-ns/"
+      - name: Resolve upstream Signal release
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUESTED='${{ inputs.upstream_tag }}'
+          if [[ -n "$REQUESTED" ]]; then
+            TAG="$REQUESTED"
+          else
+            TAG="$(gh api repos/signalapp/Signal-Android/releases/latest --jq '.tag_name')"
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Unexpected Signal tag: $TAG" >&2
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Signal upstream: $TAG"
+      - name: Fetch exact Signal tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ steps.upstream.outputs.tag }}:refs/tags/${{ steps.upstream.outputs.tag }}"
+          git checkout --detach "${{ steps.upstream.outputs.tag }}"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git lfs pull
+          git clean -fdx
+      - name: Apply audio, 10dB gain, live-NS, and PiP UI patches
+        id: patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          python "$CONTROL/patches/0001-hq-bluetooth.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0002-proximity-toggle.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0003-video-phone-speaker.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0004-hq-call-gain.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0005-strong-noise-suppression.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0006-hq-call-gain-10db-compressed.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0007-hide-self-camera-system-pip.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0008-one-to-one-video-swap.py" "$GITHUB_WORKSPACE"
+          git diff --check
+          git status --short
+      - name: Validate live-NS + gain10 + PiP UI patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/java/org/thoughtcrime/securesms/service/webrtc/StrongNoiseSuppressionPreference.kt
+          grep -F 'setStrongNoiseSuppressionEnabled' app/src/main/java/org/thoughtcrime/securesms/service/webrtc/SignalCallManager.java
+          grep -F 'AppDependencies.signalCallManager.setStrongNoiseSuppressionEnabled' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/AdditionalActionsPopup.kt
+          grep -F 'CallOverflowPopupWindow__strong_noise_suppression' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/AdditionalActionsPopup.kt
+          grep -F 'Strong noise suppression' app/src/main/res/values/strings.xml
+          grep -F 'private const val MAX_BOOST_DB = 10f' app/src/main/java/org/thoughtcrime/securesms/webrtc/audio/HqCallGainBridge.kt
+          grep -F 'gainAboveUnityDb' app/src/main/java/org/thoughtcrime/securesms/webrtc/audio/HqCallGainBridge.kt
+          test -s app/src/main/java/org/thoughtcrime/securesms/service/webrtc/SystemPipSelfPreviewPreference.kt
+          grep -F 'hideSelfPreviewInSystemPip' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/PictureInPictureCallScreen.kt
+          test -s app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/MoveableRemoteVideoRenderer.kt
+          grep -F 'oneToOneSwapActive' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+          grep -F 'oneToOneSwapEnabled = oneToOneSwapEligible' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+          grep -F 'onSwapClick = onLocalPictureInPictureFocusClicked' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-read-only: true
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+      - name: Install Signal's requested Android SDK/NDK/build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              v = tomllib.load(f)['versions']
+          print('NDK_VERSION=' + repr(v['ndk']))
+          print('BUILD_TOOLS_VERSION=' + repr(v['buildTools']))
+          print('COMPILE_SDK=' + repr(v['compileSdk']))
+          PY
+          )"
+
+          SDK_LIST="$(mktemp)"
+          sdkmanager --list --channel=3 --include_obsolete > "$SDK_LIST"
+
+          mapfile -t PLATFORM_CANDIDATES < <(
+            awk -F '|' -v api="$COMPILE_SDK" '
+              {
+                pkg=$1
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", pkg)
+                if (pkg == "platforms;android-" api || pkg ~ ("^platforms;android-" api "\\.[0-9]+$")) {
+                  print pkg
+                }
+              }
+            ' "$SDK_LIST" | sort -V -u
+          )
+
+          PLATFORM_PACKAGE=""
+          for candidate in "${PLATFORM_CANDIDATES[@]}"; do
+            if [[ "$candidate" == "platforms;android-$COMPILE_SDK" ]]; then
+              PLATFORM_PACKAGE="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$PLATFORM_PACKAGE" ]]; then
+            for candidate in "${PLATFORM_CANDIDATES[@]}"; do
+              if [[ "$candidate" == "platforms;android-$COMPILE_SDK.0" ]]; then
+                PLATFORM_PACKAGE="$candidate"
+                break
+              fi
+            done
+          fi
+          if [[ -z "$PLATFORM_PACKAGE" && ${#PLATFORM_CANDIDATES[@]} -gt 0 ]]; then
+            PLATFORM_PACKAGE="${PLATFORM_CANDIDATES[0]}"
+          fi
+          if [[ -z "$PLATFORM_PACKAGE" ]]; then
+            echo "Could not find SDK platform for compileSdk $COMPILE_SDK" >&2
+            exit 1
+          fi
+
+          echo "Using Android platform package: $PLATFORM_PACKAGE"
+          sdkmanager --channel=3 \
+            "$PLATFORM_PACKAGE" \
+            "build-tools;$BUILD_TOOLS_VERSION" \
+            "ndk;$NDK_VERSION"
+      - name: Resolve Signal's exact RingRTC AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          chmod +x gradlew
+          ./gradlew \
+            -I "$CONTROL/tools/resolve-ringrtc.init.gradle" \
+            :Signal-Android:copyHqGainRingRtc \
+            --no-configuration-cache \
+            --stacktrace
+          test -s app/build/hq-gain/ringrtc-original.aar
+          test -f app/build/hq-gain/ringrtc-direct-dependencies.txt
+          echo "RingRTC version: $(cat app/build/hq-gain/ringrtc-version.txt)"
+          echo "RingRTC direct dependencies:"
+          cat app/build/hq-gain/ringrtc-direct-dependencies.txt || true
+      - name: Install exact RingRTC native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler make pkg-config
+
+          RINGRTC_NDK_VERSION='28.0.13004108'
+          sdkmanager --channel=3 \
+            "platforms;android-34" \
+            "ndk;$RINGRTC_NDK_VERSION"
+
+          RINGRTC_VERSION="$(cat app/build/hq-gain/ringrtc-version.txt)"
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-live-ns"
+          rm -rf "$RINGRTC_DIR"
+          git clone --depth 1 --branch "v$RINGRTC_VERSION" \
+            https://github.com/signalapp/ringrtc.git "$RINGRTC_DIR"
+
+          TOOLCHAIN="$(cat "$RINGRTC_DIR/rust-toolchain")"
+          if [[ '${{ inputs.native_archs }}' == 'all' ]]; then
+            rustup toolchain install "$TOOLCHAIN" --profile minimal \
+              --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          else
+            rustup toolchain install "$TOOLCHAIN" --profile minimal \
+              --target aarch64-linux-android
+          fi
+      - name: Sync RingRTC's exact pinned WebRTC source
+        shell: bash
+        run: |
+          set -euo pipefail
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-live-ns"
+          DEPOT_TOOLS="$RUNNER_TEMP/depot_tools-live-ns"
+          rm -rf "$DEPOT_TOOLS"
+          git clone --depth 1 \
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            "$DEPOT_TOOLS"
+          export PATH="$DEPOT_TOOLS:$PATH"
+          echo "$DEPOT_TOOLS" >> "$GITHUB_PATH"
+
+          cd "$RINGRTC_DIR"
+          ./bin/prepare-workspace android
+
+          EXPECTED_WEBRTC_TAG="$(awk -F= '$1 == "webrtc.version" {print $2}' config/version.properties)"
+          REMOTE_WEBRTC_TAGS="$(
+            git -C src/webrtc/src ls-remote --tags origin \
+              "refs/tags/$EXPECTED_WEBRTC_TAG" \
+              "refs/tags/$EXPECTED_WEBRTC_TAG^{}"
+          )"
+          EXPECTED_WEBRTC_COMMIT="$(
+            awk '$2 ~ /\^\{\}$/ {print $1; exit}' <<< "$REMOTE_WEBRTC_TAGS"
+          )"
+          if [[ -z "$EXPECTED_WEBRTC_COMMIT" ]]; then
+            EXPECTED_WEBRTC_COMMIT="$(
+              awk 'NR == 1 {print $1; exit}' <<< "$REMOTE_WEBRTC_TAGS"
+            )"
+          fi
+          [[ -n "$EXPECTED_WEBRTC_COMMIT" ]] || {
+            echo "Could not resolve RingRTC's pinned WebRTC tag on origin: $EXPECTED_WEBRTC_TAG" >&2
+            exit 1
+          }
+
+          ACTUAL_WEBRTC_COMMIT="$(git -C src/webrtc/src rev-parse HEAD)"
+          echo "RingRTC: $(cat "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-version.txt")"
+          echo "Pinned WebRTC tag: $EXPECTED_WEBRTC_TAG"
+          echo "Pinned WebRTC commit: $EXPECTED_WEBRTC_COMMIT"
+          echo "Checked-out WebRTC commit: $ACTUAL_WEBRTC_COMMIT"
+          [[ "$ACTUAL_WEBRTC_COMMIT" == "$EXPECTED_WEBRTC_COMMIT" ]] || {
+            echo "WebRTC checkout does not match the commit referenced by RingRTC's pinned tag" >&2
+            exit 1
+          }
+      - name: Patch RingRTC and WebRTC for verified live kHigh NS
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-live-ns"
+
+          python "$CONTROL/live-ns/patch-webrtc-live-ns.py" \
+            "$RINGRTC_DIR/src/webrtc/src"
+          python "$CONTROL/live-ns/patch-ringrtc-live-ns.py" \
+            "$RINGRTC_DIR"
+          python "$CONTROL/live-ns/configure-ringrtc-archs.py" \
+            "$RINGRTC_DIR" '${{ inputs.native_archs }}'
+
+          grep -F 'setSoftwareNoiseSuppressionEnabled' \
+            "$RINGRTC_DIR/src/webrtc/src/sdk/android/api/org/webrtc/PeerConnectionFactory.java"
+          grep -F 'NoiseSuppression::Level::kHigh' \
+            "$RINGRTC_DIR/src/webrtc/src/sdk/android/src/jni/pc/peer_connection_factory.cc"
+          grep -F 'effects.toggleNS(enabled)' \
+            "$RINGRTC_DIR/src/webrtc/src/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java"
+          grep -F 'setStrongNoiseSuppressionEnabled' \
+            "$RINGRTC_DIR/src/android/api/org/signal/ringrtc/CallManager.java"
+
+          git -C "$RINGRTC_DIR" diff --check
+          git -C "$RINGRTC_DIR/src/webrtc/src" diff --check
+      - name: Build custom live-NS RingRTC/WebRTC AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-live-ns"
+          export PATH="$RUNNER_TEMP/depot_tools-live-ns:$PATH"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.0.13004108"
+
+          cd "$RINGRTC_DIR"
+          ./bin/build-aar --release
+
+          mapfile -t AARS < <(find out -type f -path '*/outputs/aar/*.aar' -name '*release*.aar' | sort)
+          if [[ ${#AARS[@]} -ne 1 ]]; then
+            echo "Expected exactly one release RingRTC AAR, found ${#AARS[@]}" >&2
+            printf '%s\n' "${AARS[@]}" >&2
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/app/build/hq-gain"
+          cp "${AARS[0]}" "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-source.aar"
+          unzip -l "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-source.aar" | \
+            tee "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt"
+          grep -F 'classes.jar' "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt"
+          grep -F 'jni/arm64-v8a/' "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt"
+      - name: Add no-per-buffer HQ gain playout hook to custom RingRTC
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          mkdir -p app/libs
+          bash "$CONTROL/tools/patch-ringrtc-aar.sh" \
+            app/build/hq-gain/ringrtc-live-ns-source.aar \
+            app/libs/ringrtc-android-hqgain-live-ns.aar
+          test -s app/libs/ringrtc-android-hqgain-live-ns.aar
+      - name: Use custom RingRTC only for this test checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          old = '  implementation(libs.signal.ringrtc)'
+
+          deps_file = Path("app/build/hq-gain/ringrtc-direct-dependencies.txt")
+          direct_deps = [line.strip() for line in deps_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+          replacement = ['  implementation(files("libs/ringrtc-android-hqgain-live-ns.aar"))']
+          replacement += [f'  implementation("{coordinate}")' for coordinate in direct_deps]
+          new = "\n".join(replacement)
+
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"Expected exactly one RingRTC dependency line, found {count}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          print("Preserved RingRTC direct dependencies:", direct_deps)
+          PY
+          git diff --check
+      - name: Run Signal's normal PR-level CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew ciRemote
+      - name: Prepare validated native handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          HANDOFF="$RUNNER_TEMP/live-ns-handoff"
+          rm -rf "$HANDOFF"
+          mkdir -p "$HANDOFF"
+          cp app/libs/ringrtc-android-hqgain-live-ns.aar "$HANDOFF/"
+          cp app/build/hq-gain/ringrtc-direct-dependencies.txt "$HANDOFF/"
+          cp app/build/hq-gain/ringrtc-version.txt "$HANDOFF/"
+          printf '%s\n' '${{ steps.upstream.outputs.tag }}' > "$HANDOFF/upstream-tag.txt"
+          (cd "$HANDOFF" && sha256sum ringrtc-android-hqgain-live-ns.aar > ringrtc-android-hqgain-live-ns.aar.sha256)
+          cat "$HANDOFF/upstream-tag.txt"
+          cat "$HANDOFF/ringrtc-version.txt"
+          cat "$HANDOFF/ringrtc-android-hqgain-live-ns.aar.sha256"
+
+      - name: Upload validated native handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: live-strong-ns-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/live-ns-handoff
+          if-no-files-found: error
+          retention-days: 7
+      - name: Archive reports for failed build
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hq-gain-live-strong-ns-ci-reports-${{ github.run_id }}
+          path: |
+            **/build/reports
+            **/build/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release_apk:
+    name: Fresh runner release + R8 + signing
+    needs: native_and_ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: true
+          lfs: true
+      - name: Preserve five Signal patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          rm -rf "$CONTROL"
+          mkdir -p "$CONTROL/patches"
+          cp patches/0001-hq-bluetooth.py "$CONTROL/patches/"
+          cp patches/0002-proximity-toggle.py "$CONTROL/patches/"
+          cp patches/0003-video-phone-speaker.py "$CONTROL/patches/"
+          cp patches/0004-hq-call-gain.py "$CONTROL/patches/"
+          cp patches/0005-strong-noise-suppression.py "$CONTROL/patches/"
+          cp patches/0006-hq-call-gain-10db-compressed.py "$CONTROL/patches/"
+          cp patches/0007-hide-self-camera-system-pip.py "$CONTROL/patches/"
+          cp patches/0008-one-to-one-video-swap.py "$CONTROL/patches/"
+      - name: Fetch exact Signal tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ needs.native_and_ci.outputs.upstream_tag }}:refs/tags/${{ needs.native_and_ci.outputs.upstream_tag }}"
+          git checkout --detach "${{ needs.native_and_ci.outputs.upstream_tag }}"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git lfs pull
+          git clean -fdx
+      - name: Apply audio, 10dB gain, live-NS, and PiP UI patches
+        id: patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/hq-gain-control"
+          python "$CONTROL/patches/0001-hq-bluetooth.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0002-proximity-toggle.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0003-video-phone-speaker.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0004-hq-call-gain.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0005-strong-noise-suppression.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0006-hq-call-gain-10db-compressed.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0007-hide-self-camera-system-pip.py" "$GITHUB_WORKSPACE"
+          python "$CONTROL/patches/0008-one-to-one-video-swap.py" "$GITHUB_WORKSPACE"
+          git diff --check
+          git status --short
+      - name: Validate live-NS + gain10 + PiP UI patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/java/org/thoughtcrime/securesms/service/webrtc/StrongNoiseSuppressionPreference.kt
+          grep -F 'setStrongNoiseSuppressionEnabled' app/src/main/java/org/thoughtcrime/securesms/service/webrtc/SignalCallManager.java
+          grep -F 'AppDependencies.signalCallManager.setStrongNoiseSuppressionEnabled' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/AdditionalActionsPopup.kt
+          grep -F 'CallOverflowPopupWindow__strong_noise_suppression' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/AdditionalActionsPopup.kt
+          grep -F 'Strong noise suppression' app/src/main/res/values/strings.xml
+          grep -F 'private const val MAX_BOOST_DB = 10f' app/src/main/java/org/thoughtcrime/securesms/webrtc/audio/HqCallGainBridge.kt
+          grep -F 'gainAboveUnityDb' app/src/main/java/org/thoughtcrime/securesms/webrtc/audio/HqCallGainBridge.kt
+          test -s app/src/main/java/org/thoughtcrime/securesms/service/webrtc/SystemPipSelfPreviewPreference.kt
+          grep -F 'hideSelfPreviewInSystemPip' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/PictureInPictureCallScreen.kt
+          test -s app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/MoveableRemoteVideoRenderer.kt
+          grep -F 'oneToOneSwapActive' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+          grep -F 'oneToOneSwapEnabled = oneToOneSwapEligible' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+          grep -F 'onSwapClick = onLocalPictureInPictureFocusClicked' app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/CallScreen.kt
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-read-only: true
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+      - name: Install Signal's requested Android SDK/NDK/build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          eval "$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              v = tomllib.load(f)['versions']
+          print('NDK_VERSION=' + repr(v['ndk']))
+          print('BUILD_TOOLS_VERSION=' + repr(v['buildTools']))
+          print('COMPILE_SDK=' + repr(v['compileSdk']))
+          PY
+          )"
+
+          SDK_LIST="$(mktemp)"
+          sdkmanager --list --channel=3 --include_obsolete > "$SDK_LIST"
+
+          mapfile -t PLATFORM_CANDIDATES < <(
+            awk -F '|' -v api="$COMPILE_SDK" '
+              {
+                pkg=$1
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", pkg)
+                if (pkg == "platforms;android-" api || pkg ~ ("^platforms;android-" api "\\.[0-9]+$")) {
+                  print pkg
+                }
+              }
+            ' "$SDK_LIST" | sort -V -u
+          )
+
+          PLATFORM_PACKAGE=""
+          for candidate in "${PLATFORM_CANDIDATES[@]}"; do
+            if [[ "$candidate" == "platforms;android-$COMPILE_SDK" ]]; then
+              PLATFORM_PACKAGE="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$PLATFORM_PACKAGE" ]]; then
+            for candidate in "${PLATFORM_CANDIDATES[@]}"; do
+              if [[ "$candidate" == "platforms;android-$COMPILE_SDK.0" ]]; then
+                PLATFORM_PACKAGE="$candidate"
+                break
+              fi
+            done
+          fi
+          if [[ -z "$PLATFORM_PACKAGE" && ${#PLATFORM_CANDIDATES[@]} -gt 0 ]]; then
+            PLATFORM_PACKAGE="${PLATFORM_CANDIDATES[0]}"
+          fi
+          if [[ -z "$PLATFORM_PACKAGE" ]]; then
+            echo "Could not find SDK platform for compileSdk $COMPILE_SDK" >&2
+            exit 1
+          fi
+
+          echo "Using Android platform package: $PLATFORM_PACKAGE"
+          sdkmanager --channel=3 \
+            "$PLATFORM_PACKAGE" \
+            "build-tools;$BUILD_TOOLS_VERSION" \
+            "ndk;$NDK_VERSION"
+      - name: Download validated native handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: live-strong-ns-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/live-ns-handoff
+
+      - name: Install validated custom RingRTC on fresh runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          HANDOFF="$RUNNER_TEMP/live-ns-handoff"
+          test -s "$HANDOFF/ringrtc-android-hqgain-live-ns.aar"
+          test -s "$HANDOFF/ringrtc-direct-dependencies.txt"
+          test -s "$HANDOFF/ringrtc-version.txt"
+          test -s "$HANDOFF/upstream-tag.txt"
+          test -s "$HANDOFF/ringrtc-android-hqgain-live-ns.aar.sha256"
+
+          [[ "$(cat "$HANDOFF/upstream-tag.txt")" == '${{ needs.native_and_ci.outputs.upstream_tag }}' ]] || {
+            echo "Native handoff Signal tag mismatch" >&2
+            exit 1
+          }
+          (cd "$HANDOFF" && sha256sum -c ringrtc-android-hqgain-live-ns.aar.sha256)
+
+          mkdir -p app/libs app/build/hq-gain
+          cp "$HANDOFF/ringrtc-android-hqgain-live-ns.aar" app/libs/
+          cp "$HANDOFF/ringrtc-direct-dependencies.txt" app/build/hq-gain/
+          cp "$HANDOFF/ringrtc-version.txt" app/build/hq-gain/
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          version = Path("app/build/hq-gain/ringrtc-version.txt").read_text(encoding="utf-8").strip()
+          catalog = Path("gradle/libs.versions.toml").read_text(encoding="utf-8")
+          match = re.search(r'(?m)^\s*signal-ringrtc\s*=\s*"([^"]+)"\s*$', catalog)
+          if not match:
+              raise SystemExit("Could not read signal-ringrtc coordinate from version catalog")
+          expected = f"org.signal:ringrtc-android:{version}"
+          if match.group(1) != expected:
+              raise SystemExit(f"Native handoff RingRTC mismatch: handoff={expected}, Signal={match.group(1)}")
+          print("Using validated RingRTC", version)
+          PY
+      - name: Use custom RingRTC only for this test checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          old = '  implementation(libs.signal.ringrtc)'
+
+          deps_file = Path("app/build/hq-gain/ringrtc-direct-dependencies.txt")
+          direct_deps = [line.strip() for line in deps_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+          replacement = ['  implementation(files("libs/ringrtc-android-hqgain-live-ns.aar"))']
+          replacement += [f'  implementation("{coordinate}")' for coordinate in direct_deps]
+          new = "\n".join(replacement)
+
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"Expected exactly one RingRTC dependency line, found {count}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          print("Preserved RingRTC direct dependencies:", direct_deps)
+          PY
+          git diff --check
+      - name: Prepare persistent fork signing key
+        id: signing_key
+        shell: bash
+        env:
+          FORK_KEYSTORE_B64: ${{ secrets.FORK_KEYSTORE_B64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${FORK_KEYSTORE_B64:?Missing FORK_KEYSTORE_B64 repository secret}"
+          : "${FORK_KEYSTORE_PASSWORD:?Missing FORK_KEYSTORE_PASSWORD repository secret}"
+          : "${FORK_KEY_ALIAS:?Missing FORK_KEY_ALIAS repository secret}"
+
+          printf '%s' "$FORK_KEYSTORE_B64" | base64 --decode > fork-signing.jks
+
+          keytool -list \
+            -keystore fork-signing.jks \
+            -storepass "$FORK_KEYSTORE_PASSWORD" \
+            -alias "$FORK_KEY_ALIAS" >/dev/null
+
+          KEYSTORE_TYPE="$(keytool -list \
+            -keystore fork-signing.jks \
+            -storepass "$FORK_KEYSTORE_PASSWORD" | \
+            awk -F': ' '/^Keystore type:/ { print $2; exit }')"
+
+          if [[ -z "$KEYSTORE_TYPE" ]]; then
+            echo "Could not determine keystore type." >&2
+            exit 1
+          fi
+          if [[ "$KEYSTORE_TYPE" != "PKCS12" ]]; then
+            : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD for non-PKCS12 keystore}"
+          fi
+          echo "type=$KEYSTORE_TYPE" >> "$GITHUB_OUTPUT"
+      - name: Build optimized githubProdRelease APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :Signal-Android:assembleGithubProdRelease --stacktrace
+      - name: Sign, verify, and checksum test APK
+        id: artifact
+        shell: bash
+        env:
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS_VERSION="$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              print(tomllib.load(f)['versions']['buildTools'])
+          PY
+          )"
+
+          ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          mkdir -p dist
+
+          APK="$(find app/build/outputs/apk -type f -name '*universal*.apk' -print -quit)"
+          if [[ -z "$APK" ]]; then
+            APK="$(find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          fi
+          [[ -n "$APK" ]] || { echo "No release APK found" >&2; exit 1; }
+
+          if [[ "${{ steps.signing_key.outputs.type }}" == "PKCS12" ]]; then
+            export EFFECTIVE_KEY_PASSWORD="$FORK_KEYSTORE_PASSWORD"
+          else
+            : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD}"
+            export EFFECTIVE_KEY_PASSWORD="$FORK_KEY_PASSWORD"
+          fi
+
+          ALIGNED="dist/aligned-unsigned.apk"
+          OUT="dist/Signal-${{ needs.native_and_ci.outputs.upstream_tag }}-hq-gain10-live-ns-pip-swap-test.apk"
+
+          "$ZIPALIGN" -f -p 4 "$APK" "$ALIGNED"
+          "$APKSIGNER" sign \
+            --ks fork-signing.jks \
+            --ks-key-alias "$FORK_KEY_ALIAS" \
+            --ks-pass env:FORK_KEYSTORE_PASSWORD \
+            --key-pass env:EFFECTIVE_KEY_PASSWORD \
+            --out "$OUT" \
+            "$ALIGNED"
+          "$APKSIGNER" verify --verbose --print-certs "$OUT"
+          rm -f "$ALIGNED" fork-signing.jks
+
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          echo "checksum=$OUT.sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload manual test APK only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hq-gain10-live-ns-pip-swap-${{ needs.native_and_ci.outputs.upstream_tag }}
+          path: |
+            ${{ steps.artifact.outputs.apk }}
+            ${{ steps.artifact.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Archive reports for failed build
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hq-gain-live-strong-ns-release-reports-${{ github.run_id }}
+          path: |
+            **/build/reports
+            **/build/test-results
+          if-no-files-found: ignore
+          retention-days: 7
