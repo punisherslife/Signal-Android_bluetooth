@@ -1,0 +1,500 @@
+name: HQ optimized consolidated kit test
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional Signal tag (example: v8.26.4). Leave blank for latest stable."
+        required: false
+        type: string
+      native_archs:
+        description: "Custom RingRTC/WebRTC ABIs. arm64 is fastest for phone testing."
+        required: true
+        default: arm64
+        type: choice
+        options:
+          - arm64
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hq-optimized-consolidated-kit
+  cancel-in-progress: false
+
+jobs:
+  native_and_ci:
+    name: Build + preserve native AAR, then ciRemote
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      upstream_tag: ${{ steps.upstream.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: true
+          lfs: true
+
+      - name: Preserve current patch stack and optimized helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          rm -rf "$CONTROL"
+          mkdir -p "$CONTROL"
+          cp -R patches "$CONTROL/patches"
+          cp -R tools "$CONTROL/tools"
+          test -x "$CONTROL/tools/optimized-kit/apply-existing-patches.py"
+          test -x "$CONTROL/tools/optimized-kit/validate-signal-shape.sh"
+          test -x "$CONTROL/tools/optimized-kit/install-signal-sdk.sh"
+          test -x "$CONTROL/tools/optimized-kit/use-custom-ringrtc.py"
+
+      - name: Resolve upstream Signal release
+        id: upstream
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          REQUESTED="$REQUESTED_TAG"
+          if [[ -n "$REQUESTED" ]]; then
+            TAG="$REQUESTED"
+          else
+            TAG="$(gh api repos/signalapp/Signal-Android/releases/latest --jq '.tag_name')"
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Unexpected Signal tag: $TAG" >&2
+            exit 1
+          }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Signal upstream: $TAG"
+
+      - name: Fetch exact Signal tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ steps.upstream.outputs.tag }}:refs/tags/${{ steps.upstream.outputs.tag }}"
+          git checkout --detach "${{ steps.upstream.outputs.tag }}"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git lfs pull
+          git clean -fdx
+
+      - name: Apply current nine-patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          python "$CONTROL/tools/optimized-kit/apply-existing-patches.py" "$GITHUB_WORKSPACE" "$CONTROL"
+          git status --short
+
+      - name: Validate patched Signal source shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/optimized-kit-control/tools/optimized-kit/validate-signal-shape.sh" "$GITHUB_WORKSPACE"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-read-only: true
+
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Signal's exact Android SDK/NDK/build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/optimized-kit-control/tools/optimized-kit/install-signal-sdk.sh"
+
+      - name: Resolve Signal's exact RingRTC AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          chmod +x gradlew
+          ./gradlew \
+            -I "$CONTROL/tools/hq-gain/resolve-ringrtc.init.gradle" \
+            :Signal-Android:copyHqGainRingRtc \
+            --no-configuration-cache \
+            --stacktrace
+          test -s app/build/hq-gain/ringrtc-original.aar
+          test -f app/build/hq-gain/ringrtc-direct-dependencies.txt
+          test -s app/build/hq-gain/ringrtc-version.txt
+          echo "RingRTC version: $(cat app/build/hq-gain/ringrtc-version.txt)"
+
+      - name: Install exact RingRTC native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler make pkg-config
+
+          RINGRTC_NDK_VERSION='28.0.13004108'
+          sdkmanager --channel=3 "platforms;android-34" "ndk;$RINGRTC_NDK_VERSION"
+
+          RINGRTC_VERSION="$(cat app/build/hq-gain/ringrtc-version.txt)"
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-optimized-kit"
+          rm -rf "$RINGRTC_DIR"
+          git clone --depth 1 --branch "v$RINGRTC_VERSION" https://github.com/signalapp/ringrtc.git "$RINGRTC_DIR"
+
+          TOOLCHAIN="$(cat "$RINGRTC_DIR/rust-toolchain")"
+          if [[ '${{ inputs.native_archs }}' == 'all' ]]; then
+            rustup toolchain install "$TOOLCHAIN" --profile minimal \
+              --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          else
+            rustup toolchain install "$TOOLCHAIN" --profile minimal --target aarch64-linux-android
+          fi
+
+      - name: Sync RingRTC's exact pinned WebRTC source
+        shell: bash
+        run: |
+          set -euo pipefail
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-optimized-kit"
+          DEPOT_TOOLS="$RUNNER_TEMP/depot_tools-optimized-kit"
+          rm -rf "$DEPOT_TOOLS"
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$DEPOT_TOOLS"
+          export PATH="$DEPOT_TOOLS:$PATH"
+          echo "$DEPOT_TOOLS" >> "$GITHUB_PATH"
+
+          cd "$RINGRTC_DIR"
+          ./bin/prepare-workspace android
+
+          EXPECTED_WEBRTC_TAG="$(awk -F= '$1 == "webrtc.version" {print $2}' config/version.properties)"
+          REMOTE_WEBRTC_TAGS="$(
+            git -C src/webrtc/src ls-remote --tags origin \
+              "refs/tags/$EXPECTED_WEBRTC_TAG" \
+              "refs/tags/$EXPECTED_WEBRTC_TAG^{}"
+          )"
+          EXPECTED_WEBRTC_COMMIT="$(awk '$2 ~ /\^\{\}$/ {print $1; exit}' <<< "$REMOTE_WEBRTC_TAGS")"
+          if [[ -z "$EXPECTED_WEBRTC_COMMIT" ]]; then
+            EXPECTED_WEBRTC_COMMIT="$(awk 'NR == 1 {print $1; exit}' <<< "$REMOTE_WEBRTC_TAGS")"
+          fi
+          [[ -n "$EXPECTED_WEBRTC_COMMIT" ]] || {
+            echo "Could not resolve RingRTC pinned WebRTC tag: $EXPECTED_WEBRTC_TAG" >&2
+            exit 1
+          }
+          ACTUAL_WEBRTC_COMMIT="$(git -C src/webrtc/src rev-parse HEAD)"
+          echo "Pinned WebRTC tag: $EXPECTED_WEBRTC_TAG"
+          echo "Pinned WebRTC commit: $EXPECTED_WEBRTC_COMMIT"
+          echo "Checked-out WebRTC commit: $ACTUAL_WEBRTC_COMMIT"
+          [[ "$ACTUAL_WEBRTC_COMMIT" == "$EXPECTED_WEBRTC_COMMIT" ]] || {
+            echo "WebRTC checkout does not match RingRTC's pinned tag" >&2
+            exit 1
+          }
+
+      - name: Patch RingRTC and WebRTC for verified live kHigh NS
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-optimized-kit"
+          python "$CONTROL/tools/live-ns/patch-webrtc-live-ns.py" "$RINGRTC_DIR/src/webrtc/src"
+          python "$CONTROL/tools/live-ns/patch-ringrtc-live-ns.py" "$RINGRTC_DIR"
+          python "$CONTROL/tools/live-ns/configure-ringrtc-archs.py" "$RINGRTC_DIR" '${{ inputs.native_archs }}'
+          grep -F 'setSoftwareNoiseSuppressionEnabled' "$RINGRTC_DIR/src/webrtc/src/sdk/android/api/org/webrtc/PeerConnectionFactory.java" >/dev/null
+          grep -F 'NoiseSuppression::Level::kHigh' "$RINGRTC_DIR/src/webrtc/src/sdk/android/src/jni/pc/peer_connection_factory.cc" >/dev/null
+          grep -F 'effects.toggleNS(enabled)' "$RINGRTC_DIR/src/webrtc/src/sdk/android/src/java/org/webrtc/audio/WebRtcAudioRecord.java" >/dev/null
+          grep -F 'setStrongNoiseSuppressionEnabled' "$RINGRTC_DIR/src/android/api/org/signal/ringrtc/CallManager.java" >/dev/null
+          git -C "$RINGRTC_DIR" diff --check
+          git -C "$RINGRTC_DIR/src/webrtc/src" diff --check
+
+      - name: Build custom live-NS RingRTC/WebRTC AAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          RINGRTC_DIR="$RUNNER_TEMP/ringrtc-optimized-kit"
+          export PATH="$RUNNER_TEMP/depot_tools-optimized-kit:$PATH"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.0.13004108"
+          cd "$RINGRTC_DIR"
+          ./bin/build-aar --release
+
+          mapfile -t AARS < <(find out -type f -path '*/outputs/aar/*.aar' -name '*release*.aar' | sort)
+          if [[ ${#AARS[@]} -ne 1 ]]; then
+            echo "Expected exactly one release RingRTC AAR, found ${#AARS[@]}" >&2
+            printf '%s\n' "${AARS[@]}" >&2
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/app/build/hq-gain"
+          cp "${AARS[0]}" "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-source.aar"
+          unzip -l "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-source.aar" > "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt"
+          grep -F 'classes.jar' "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt" >/dev/null
+          grep -F 'jni/arm64-v8a/' "$GITHUB_WORKSPACE/app/build/hq-gain/ringrtc-live-ns-aar-list.txt" >/dev/null
+
+      - name: Add no-per-buffer HQ gain playout hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          mkdir -p app/libs
+          bash "$CONTROL/tools/hq-gain/patch-ringrtc-aar.sh" \
+            app/build/hq-gain/ringrtc-live-ns-source.aar \
+            app/libs/ringrtc-android-hqgain-live-ns.aar
+          test -s app/libs/ringrtc-android-hqgain-live-ns.aar
+
+      - name: Use custom RingRTC only for this checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/optimized-kit-control/tools/optimized-kit/use-custom-ringrtc.py" "$GITHUB_WORKSPACE"
+          git diff --check
+
+      # Critical ordering change: preserve the expensive native result BEFORE ciRemote.
+      - name: Prepare native handoff before CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          HANDOFF="$RUNNER_TEMP/optimized-native-handoff"
+          rm -rf "$HANDOFF"
+          mkdir -p "$HANDOFF"
+          cp app/libs/ringrtc-android-hqgain-live-ns.aar "$HANDOFF/"
+          cp app/build/hq-gain/ringrtc-direct-dependencies.txt "$HANDOFF/"
+          cp app/build/hq-gain/ringrtc-version.txt "$HANDOFF/"
+          printf '%s\n' '${{ steps.upstream.outputs.tag }}' > "$HANDOFF/upstream-tag.txt"
+          (cd "$HANDOFF" && sha256sum ringrtc-android-hqgain-live-ns.aar > ringrtc-android-hqgain-live-ns.aar.sha256)
+          cat "$HANDOFF/upstream-tag.txt"
+          cat "$HANDOFF/ringrtc-version.txt"
+          cat "$HANDOFF/ringrtc-android-hqgain-live-ns.aar.sha256"
+
+      - name: Upload native handoff before CI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: optimized-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/optimized-native-handoff
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run Signal's normal PR-level CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew ciRemote
+
+      - name: Archive reports for failed CI
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: optimized-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            **/build/reports
+            **/build/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release_apk:
+    name: Fresh runner release + R8 + signing
+    needs: native_and_ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: true
+          lfs: true
+
+      - name: Preserve current patch stack and optimized helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          rm -rf "$CONTROL"
+          mkdir -p "$CONTROL"
+          cp -R patches "$CONTROL/patches"
+          cp -R tools "$CONTROL/tools"
+
+      - name: Fetch exact Signal tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/signalapp/Signal-Android.git
+          git fetch --force upstream "refs/tags/${{ needs.native_and_ci.outputs.upstream_tag }}:refs/tags/${{ needs.native_and_ci.outputs.upstream_tag }}"
+          git checkout --detach "${{ needs.native_and_ci.outputs.upstream_tag }}"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git lfs pull
+          git clean -fdx
+
+      - name: Apply current nine-patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTROL="$RUNNER_TEMP/optimized-kit-control"
+          python "$CONTROL/tools/optimized-kit/apply-existing-patches.py" "$GITHUB_WORKSPACE" "$CONTROL"
+          "$CONTROL/tools/optimized-kit/validate-signal-shape.sh" "$GITHUB_WORKSPACE"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-read-only: true
+
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Signal's exact Android SDK/NDK/build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/optimized-kit-control/tools/optimized-kit/install-signal-sdk.sh"
+
+      - name: Download native handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: optimized-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/optimized-native-handoff
+
+      - name: Verify and install native handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          HANDOFF="$RUNNER_TEMP/optimized-native-handoff"
+          test -s "$HANDOFF/ringrtc-android-hqgain-live-ns.aar"
+          test -s "$HANDOFF/ringrtc-direct-dependencies.txt"
+          test -s "$HANDOFF/ringrtc-version.txt"
+          test -s "$HANDOFF/upstream-tag.txt"
+          test -s "$HANDOFF/ringrtc-android-hqgain-live-ns.aar.sha256"
+          [[ "$(cat "$HANDOFF/upstream-tag.txt")" == '${{ needs.native_and_ci.outputs.upstream_tag }}' ]] || {
+            echo "Native handoff Signal tag mismatch" >&2
+            exit 1
+          }
+          (cd "$HANDOFF" && sha256sum -c ringrtc-android-hqgain-live-ns.aar.sha256)
+          mkdir -p app/libs app/build/hq-gain
+          cp "$HANDOFF/ringrtc-android-hqgain-live-ns.aar" app/libs/
+          cp "$HANDOFF/ringrtc-direct-dependencies.txt" app/build/hq-gain/
+          cp "$HANDOFF/ringrtc-version.txt" app/build/hq-gain/
+          "$RUNNER_TEMP/optimized-kit-control/tools/optimized-kit/use-custom-ringrtc.py" "$GITHUB_WORKSPACE"
+          git diff --check
+
+      - name: Prepare persistent fork signing key
+        id: signing_key
+        shell: bash
+        env:
+          FORK_KEYSTORE_B64: ${{ secrets.FORK_KEYSTORE_B64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${FORK_KEYSTORE_B64:?Missing FORK_KEYSTORE_B64 repository secret}"
+          : "${FORK_KEYSTORE_PASSWORD:?Missing FORK_KEYSTORE_PASSWORD repository secret}"
+          : "${FORK_KEY_ALIAS:?Missing FORK_KEY_ALIAS repository secret}"
+          printf '%s' "$FORK_KEYSTORE_B64" | base64 --decode > fork-signing.jks
+          keytool -list -keystore fork-signing.jks -storepass "$FORK_KEYSTORE_PASSWORD" -alias "$FORK_KEY_ALIAS" >/dev/null
+          KEYSTORE_TYPE="$(keytool -list -keystore fork-signing.jks -storepass "$FORK_KEYSTORE_PASSWORD" | awk -F': ' '/^Keystore type:/ { print $2; exit }')"
+          [[ -n "$KEYSTORE_TYPE" ]] || { echo "Could not determine keystore type" >&2; exit 1; }
+          if [[ "$KEYSTORE_TYPE" != "PKCS12" ]]; then
+            : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD for non-PKCS12 keystore}"
+          fi
+          echo "type=$KEYSTORE_TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Build optimized githubProdRelease APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :Signal-Android:assembleGithubProdRelease --stacktrace
+
+      - name: Sign, verify, and checksum APK
+        id: artifact
+        shell: bash
+        env:
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS_VERSION="$(python - <<'PY'
+          import tomllib
+          with open('gradle/libs.versions.toml', 'rb') as f:
+              print(tomllib.load(f)['versions']['buildTools'])
+          PY
+          )"
+          ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/zipalign"
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          mkdir -p dist
+          APK="$(find app/build/outputs/apk -type f -name '*universal*.apk' -print -quit)"
+          if [[ -z "$APK" ]]; then
+            APK="$(find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          fi
+          [[ -n "$APK" ]] || { echo "No release APK found" >&2; exit 1; }
+
+          if [[ "${{ steps.signing_key.outputs.type }}" == "PKCS12" ]]; then
+            export EFFECTIVE_KEY_PASSWORD="$FORK_KEYSTORE_PASSWORD"
+          else
+            : "${FORK_KEY_PASSWORD:?Missing FORK_KEY_PASSWORD}"
+            export EFFECTIVE_KEY_PASSWORD="$FORK_KEY_PASSWORD"
+          fi
+
+          ALIGNED="dist/aligned-unsigned.apk"
+          OUT="dist/Signal-${{ needs.native_and_ci.outputs.upstream_tag }}-optimized-kit-test.apk"
+          "$ZIPALIGN" -f -p 4 "$APK" "$ALIGNED"
+          "$APKSIGNER" sign \
+            --ks fork-signing.jks \
+            --ks-key-alias "$FORK_KEY_ALIAS" \
+            --ks-pass env:FORK_KEYSTORE_PASSWORD \
+            --key-pass env:EFFECTIVE_KEY_PASSWORD \
+            --out "$OUT" \
+            "$ALIGNED"
+          "$APKSIGNER" verify --verbose --print-certs "$OUT"
+          rm -f "$ALIGNED" fork-signing.jks
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          echo "checksum=$OUT.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload manual test APK only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: optimized-kit-${{ needs.native_and_ci.outputs.upstream_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.artifact.outputs.apk }}
+            ${{ steps.artifact.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Archive reports for failed release build
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: optimized-release-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            **/build/reports
+            **/build/test-results
+          if-no-files-found: ignore
+          retention-days: 7
