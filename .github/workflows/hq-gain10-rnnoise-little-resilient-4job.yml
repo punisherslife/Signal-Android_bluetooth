@@ -1,0 +1,244 @@
+name: HQ gain 10 dB + RNNoise Little — validated source kit
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Audited Signal tag (this kit supports v8.26.4)
+        type: string
+        required: true
+        default: v8.26.4
+      native_archs:
+        description: arm64 makes a smaller phone-only build; all builds all four ABIs
+        type: choice
+        required: true
+        default: arm64
+        options: [arm64, all]
+
+permissions:
+  contents: read
+
+jobs:
+  native_ringrtc:
+    name: 1/4 Build and checkpoint native AAR
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify requested source pin
+        id: pins
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          p = json.load(open('tools/rnnoise/versions.json'))
+          if os.environ['REQUESTED_TAG'] != p['signal_tag']:
+              raise SystemExit('This audited kit requires ' + p['signal_tag'] + '; update and retest pins before changing versions.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('commit=' + p['signal_commit'] + '\n')
+          PY
+      - uses: ./.github/actions/prepare-signal
+        with:
+          commit: ${{ steps.pins.outputs.commit }}
+      - name: Resolve exact RingRTC dependency and Maven dependencies
+        working-directory: signal
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash gradlew -I ../tools/hq-gain/resolve-ringrtc.init.gradle \
+            :Signal-Android:copyHqGainRingRtc --no-configuration-cache --stacktrace
+      - name: Install pinned native build dependencies
+        shell: bash
+        env:
+          NATIVE_ARCHS: ${{ inputs.native_archs }}
+        run: bash tools/rnnoise/build-native.sh deps signal "$RUNNER_TEMP/rnnoise-build" "$NATIVE_ARCHS"
+      - name: Sync pinned WebRTC
+        shell: bash
+        env:
+          NATIVE_ARCHS: ${{ inputs.native_archs }}
+        run: bash tools/rnnoise/build-native.sh sync signal "$RUNNER_TEMP/rnnoise-build" "$NATIVE_ARCHS"
+      - name: Apply RNNoise native patches
+        shell: bash
+        env:
+          NATIVE_ARCHS: ${{ inputs.native_archs }}
+        run: bash tools/rnnoise/build-native.sh patch signal "$RUNNER_TEMP/rnnoise-build" "$NATIVE_ARCHS"
+      - name: Test native wrapper and compile actual RNNoise model on host
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/test_native_processor.py
+          bash tools/rnnoise/test-vendored-rnnoise.sh "$RUNNER_TEMP/rnnoise-build/ringrtc/src/webrtc/src/third_party/rnnoise_little"
+      - name: Build native AAR and insert gain lifecycle hooks
+        shell: bash
+        env:
+          NATIVE_ARCHS: ${{ inputs.native_archs }}
+        run: bash tools/rnnoise/build-native.sh build signal "$RUNNER_TEMP/rnnoise-build" "$NATIVE_ARCHS"
+      - name: Verify and checkpoint native output
+        shell: bash
+        env:
+          NATIVE_ARCHS: ${{ inputs.native_archs }}
+        run: |
+          set -euo pipefail
+          python3 tools/optimized-kit/native-handoff.py create "$RUNNER_TEMP/rnnoise-handoff" . \
+            --source signal --ringrtc "$RUNNER_TEMP/rnnoise-build/ringrtc" \
+            --webrtc "$RUNNER_TEMP/rnnoise-build/ringrtc/src/webrtc/src" --archs "$NATIVE_ARCHS"
+      - name: Upload native checkpoint before Signal CI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-little-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/rnnoise-handoff
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+          compression-level: 0
+      - name: Preserve failed native reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-native-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signal/**/build/reports
+          if-no-files-found: ignore
+
+  signal_ci:
+    name: 2/4 Signal CI on a fresh runner
+    needs: native_ringrtc
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rnnoise-little-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/rnnoise-handoff
+      - name: Verify native checkpoint
+        id: handoff
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py verify "$RUNNER_TEMP/rnnoise-handoff" .
+      - uses: ./.github/actions/prepare-signal
+        with:
+          commit: ${{ steps.handoff.outputs.commit }}
+      - name: Install matching native AAR
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py install "$RUNNER_TEMP/rnnoise-handoff" . --source signal
+      - name: Run Signal CI
+        working-directory: signal
+        shell: bash
+        run: bash gradlew ci --stacktrace
+      - name: Preserve failed CI reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            signal/**/build/reports
+            signal/**/build/test-results
+          if-no-files-found: ignore
+
+  screenshots:
+    name: 3/4 Screenshots on a fresh runner
+    needs: native_ringrtc
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rnnoise-little-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/rnnoise-handoff
+      - name: Verify native checkpoint
+        id: handoff
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py verify "$RUNNER_TEMP/rnnoise-handoff" .
+      - uses: ./.github/actions/prepare-signal
+        with:
+          commit: ${{ steps.handoff.outputs.commit }}
+      - name: Install matching native AAR
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py install "$RUNNER_TEMP/rnnoise-handoff" . --source signal
+      - name: Validate screenshots
+        working-directory: signal
+        shell: bash
+        run: bash gradlew validateScreenshots --stacktrace
+      - name: Preserve failed screenshot reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            signal/**/build/reports
+            signal/**/build/test-results
+          if-no-files-found: ignore
+
+  release_apk:
+    name: 4/4 Assemble, sign, and verify APK
+    needs: [native_ringrtc, signal_ci, screenshots]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: rnnoise-little-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/rnnoise-handoff
+      - name: Verify native checkpoint
+        id: handoff
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py verify "$RUNNER_TEMP/rnnoise-handoff" .
+      - uses: ./.github/actions/prepare-signal
+        with:
+          commit: ${{ steps.handoff.outputs.commit }}
+      - name: Install matching native AAR
+        shell: bash
+        run: python3 tools/optimized-kit/native-handoff.py install "$RUNNER_TEMP/rnnoise-handoff" . --source signal
+      - name: Prepare signing key
+        shell: bash
+        env:
+          FORK_KEYSTORE_B64: ${{ secrets.FORK_KEYSTORE_B64 }}
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: bash tools/optimized-kit/sign-apk.sh prepare signal "$RUNNER_TEMP/rnnoise-handoff"
+      - name: Assemble optimized release
+        shell: bash
+        working-directory: signal
+        run: bash gradlew :Signal-Android:assembleGithubProdRelease --stacktrace
+      - name: Sign and verify release output
+        shell: bash
+        env:
+          FORK_KEYSTORE_PASSWORD: ${{ secrets.FORK_KEYSTORE_PASSWORD }}
+          FORK_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          FORK_KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
+        run: bash tools/optimized-kit/sign-apk.sh sign signal "$RUNNER_TEMP/rnnoise-handoff"
+      - name: Remove temporary signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/rnnoise-fork-signing.jks" "$RUNNER_TEMP/rnnoise-keystore-type"
+      - name: Upload signed test APK and provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-little-apk-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+          compression-level: 0
+      - name: Preserve failed release reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rnnoise-release-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            signal/**/build/reports
+            signal/**/build/test-results
+          if-no-files-found: ignore
