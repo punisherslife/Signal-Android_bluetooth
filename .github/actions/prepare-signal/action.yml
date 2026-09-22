@@ -1,0 +1,44 @@
+name: Prepare pinned Signal source
+description: Fresh source, ten patches, shape validation, and bounded build setup
+inputs:
+  commit:
+    description: Exact Signal source commit
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Checkout pinned Signal
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: signalapp/Signal-Android
+        ref: ${{ inputs.commit }}
+        path: signal
+        lfs: true
+        submodules: recursive
+        persist-credentials: false
+    - name: Apply and validate complete patch stack
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 tools/optimized-kit/apply-existing-patches.py signal .
+        bash tools/optimized-kit/validate-signal-shape.sh signal --rnnoise
+        python3 tools/optimized-kit/configure-ci.py signal
+        mkdir -p signal/app/src/main/assets
+        cp licenses/RNNOISE-BSD-3-CLAUSE.txt signal/app/src/main/assets/rnnoise-LICENSE.txt
+    - name: Set up Java 21
+      uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Validate Gradle Wrapper
+      uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+      with:
+        cache-read-only: true
+    - name: Set up Android SDK tools
+      uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+    - name: Install the pinned source's SDK packages
+      shell: bash
+      working-directory: signal
+      run: bash ../tools/optimized-kit/install-signal-sdk.sh
