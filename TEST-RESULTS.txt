@@ -1,0 +1,26 @@
+LOCAL REGRESSION RESULTS — 2026-09-22
+
+PASS  packaging
+OK
+
+PASS  native-wrapper
+PASS: bypass, transitions, reset, mute, formats, saturation, NaN/Inf, failures, malloc count, concurrent delivery, sink shutdown
+
+PASS  gain-bytecode
+PASS: valid gain-hook bytecode; play/stop/release and failed-play cleanup
+PASS: repeat/missing/duplicate hooks rejected; existing AAR preserved
+
+PASS  source-stack
+PASS: ten patches on real source; gain/UI integration; safe repeat refusal; late-failure rollback; missing-file preflight
+
+PASS  native-patches
+PASS: native transforms on pinned sources; explicit GN dependencies; repeated/drifted patch refusal; stock ADM retained
+
+PASS  installer
+PACKAGE_VERIFY_PASS: 55 files, checksums and script syntax
+PASS: complete installer with non-executable helpers; backup/restore; post-install edits protected
+
+PASS  workflow
+PASS: four jobs; both release gates; manual only; pinned checkout; 22 shell blocks
+
+Scope: see VALIDATION.md. No Android build, APK, or device validation claimed.

@@ -30,6 +30,7 @@ public final class PatchWebRtcAudioTrack {
 
   private static int registerCalls = 0;
   private static int unregisterCalls = 0;
+  private static int targetClasses = 0;
 
   private PatchWebRtcAudioTrack() {}
 
@@ -63,6 +64,7 @@ public final class PatchWebRtcAudioTrack {
             bytes = readAll(in);
           }
           if (name.equals(TARGET_CLASS + ".class")) {
+            targetClasses++;
             bytes = transform(bytes);
           }
           out.write(bytes);
@@ -73,6 +75,7 @@ public final class PatchWebRtcAudioTrack {
 
     System.out.println("REGISTER_CALLS=" + registerCalls);
     System.out.println("UNREGISTER_CALLS=" + unregisterCalls);
+    System.out.println("TARGET_CLASSES=" + targetClasses);
   }
 
   private static byte[] transform(byte[] bytes) {
@@ -86,16 +89,24 @@ public final class PatchWebRtcAudioTrack {
 
     boolean changed = false;
     for (MethodNode method : clazz.methods) {
+      for (AbstractInsnNode insn : method.instructions) {
+        if (insn instanceof MethodInsnNode call && BRIDGE.equals(call.owner)) {
+          throw new IllegalStateException("WebRtcAudioTrack already contains HQ gain hooks");
+        }
+      }
+    }
+    for (MethodNode method : clazz.methods) {
       for (AbstractInsnNode current = method.instructions.getFirst(); current != null; ) {
         AbstractInsnNode next = current.getNext();
         if (current instanceof MethodInsnNode call &&
             call.getOpcode() == Opcodes.INVOKEVIRTUAL &&
             AUDIO_TRACK.equals(call.owner) &&
             "()V".equals(call.desc) &&
-            ("play".equals(call.name) || "stop".equals(call.name))) {
+            ("play".equals(call.name) || "stop".equals(call.name) || "release".equals(call.name))) {
           String bridgeMethod = "play".equals(call.name) ? "registerAudioTrack" : "unregisterAudioTrack";
           InsnList hook = new InsnList();
-          // Stack before play()/stop(): [AudioTrack]. DUP preserves the receiver for the original call.
+          // release also cleans up a failed play()/stop(); unregister is idempotent.
+          // DUP preserves the receiver for the original lifecycle call.
           hook.add(new InsnNode(Opcodes.DUP));
           hook.add(new MethodInsnNode(
               Opcodes.INVOKESTATIC,

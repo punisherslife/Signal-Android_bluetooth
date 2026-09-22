@@ -23,6 +23,7 @@ javac \
 
 REGISTER_TOTAL=0
 UNREGISTER_TOTAL=0
+TARGET_TOTAL=0
 
 while IFS= read -r -d '' JAR; do
   PATCHED="$TMP/$(basename "$JAR").patched"
@@ -34,6 +35,8 @@ while IFS= read -r -d '' JAR; do
 
   REGISTER_COUNT="$(sed -n 's/^REGISTER_CALLS=//p' <<<"$OUTPUT_TEXT")"
   UNREGISTER_COUNT="$(sed -n 's/^UNREGISTER_CALLS=//p' <<<"$OUTPUT_TEXT")"
+  TARGET_COUNT="$(sed -n 's/^TARGET_CLASSES=//p' <<<"$OUTPUT_TEXT")"
+  TARGET_TOTAL=$((TARGET_TOTAL + ${TARGET_COUNT:-0}))
   REGISTER_COUNT="${REGISTER_COUNT:-0}"
   UNREGISTER_COUNT="${UNREGISTER_COUNT:-0}"
 
@@ -46,6 +49,11 @@ while IFS= read -r -d '' JAR; do
   fi
 done < <(find "$TMP/aar" -type f -name '*.jar' -print0)
 
+if (( TARGET_TOTAL != 1 )); then
+  echo "Expected exactly one WebRtcAudioTrack class, found $TARGET_TOTAL" >&2
+  exit 1
+fi
+
 if (( REGISTER_TOTAL == 0 )); then
   echo "Could not find WebRtcAudioTrack AudioTrack.play() in the resolved RingRTC AAR." >&2
   exit 1
@@ -56,13 +64,15 @@ if (( UNREGISTER_TOTAL == 0 )); then
 fi
 
 mkdir -p "$(dirname "$OUTPUT")"
-rm -f "$OUTPUT"
 (
   cd "$TMP/aar"
-  zip -q -r "$OUTPUT" .
+  zip -q -r "$TMP/result.aar" .
 )
-unzip -tq "$OUTPUT" >/dev/null
+unzip -tq "$TMP/result.aar" >/dev/null
+STAGED_OUTPUT="$(mktemp "${OUTPUT}.tmp.XXXXXX")"
+cp "$TMP/result.aar" "$STAGED_OUTPUT"
+mv -f "$STAGED_OUTPUT" "$OUTPUT"
 
-printf 'Patched WebRTC playout lifecycle: %d play hook(s), %d stop hook(s)\n' \
+printf 'Patched WebRTC playout lifecycle: %d play hook(s), %d stop/release hook(s)\n' \
   "$REGISTER_TOTAL" "$UNREGISTER_TOTAL"
 printf 'Output: %s\n' "$OUTPUT"

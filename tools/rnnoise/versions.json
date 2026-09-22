@@ -1,0 +1,10 @@
+{
+  "signal_tag": "v8.26.4",
+  "signal_commit": "15e5d644924352fa03900969ad6de0e648e5e2d0",
+  "ringrtc_version": "2.71.0",
+  "ringrtc_commit": "4c5fdb312d3c0d6b8e4091e4be5271c020f5792d",
+  "webrtc_tag": "7871f",
+  "webrtc_commit": "3a5cb5f6ea8d223a7b05e4e22ce3f9b77a740f8a",
+  "rnnoise_commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
+  "model_sha256": "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37"
+}

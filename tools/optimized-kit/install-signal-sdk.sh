@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-eval "$(python - <<'PY'
+SDK_VERSIONS="$(python3 - <<'PY'
 import tomllib
 with open('gradle/libs.versions.toml', 'rb') as f:
     v = tomllib.load(f)['versions']
-print('NDK_VERSION=' + repr(v['ndk']))
-print('BUILD_TOOLS_VERSION=' + repr(v['buildTools']))
-print('COMPILE_SDK=' + repr(v['compileSdk']))
+import re, shlex
+for key in ('ndk', 'buildTools', 'compileSdk'):
+    if not re.fullmatch(r'[0-9.]+', str(v[key])):
+        raise SystemExit(f'Unexpected SDK version: {key}')
+print('NDK_VERSION=' + shlex.quote(v['ndk']))
+print('BUILD_TOOLS_VERSION=' + shlex.quote(v['buildTools']))
+print('COMPILE_SDK=' + shlex.quote(v['compileSdk']))
 PY
 )"
+eval "$SDK_VERSIONS"
 
 SDK_LIST="$(mktemp)"
 trap 'rm -f "$SDK_LIST"' EXIT
