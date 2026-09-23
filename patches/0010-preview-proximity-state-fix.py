@@ -116,7 +116,7 @@ def patch_signal_audio_manager(text: str) -> str:
 '''
     text = replace_once(text, old, new, "SignalAudioManager HQ-state getter")
     return replace_once(text, "  protected var hqBluetoothAudioEnabled = false\n",
-                        "  @Volatile\n  protected var hqBluetoothAudioEnabled = false\n",
+                        "\n  @Volatile\n  protected var hqBluetoothAudioEnabled = false\n",
                         "cross-thread HQ-state visibility")
 
 
