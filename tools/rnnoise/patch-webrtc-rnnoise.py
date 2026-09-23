@@ -22,6 +22,15 @@ def replace_once(text, old, new, label):
     return text.replace(old, new, 1)
 
 
+def patch_neon(text):
+    # Baseline ARM64 supports NEON but need not define the optional dot-product
+    # macro. Preserve upstream's fallback without disabling -Wundef or forcing
+    # newer CPU instructions on devices that do not support them.
+    return replace_once(text, '#if __ARM_FEATURE_DOTPROD\n',
+        '#if defined(__ARM_FEATURE_DOTPROD) && __ARM_FEATURE_DOTPROD\n',
+        'RNNoise NEON dot-product feature guard')
+
+
 def patch_java(text):
     if 'setAudioFrameProcessor(AudioFrameProcessor audioFrameProcessor)' not in text:
         raise ValueError('WebRTC lacks the AudioFrameProcessor builder API')
@@ -116,7 +125,7 @@ def main():
         raise SystemExit('usage: patch-webrtc-rnnoise.py <webrtc-source-root>')
     root = Path(sys.argv[1]).resolve()
     vendor = root / 'third_party/rnnoise_little'
-    required = ['include/rnnoise.h', 'src/rnnoise_data.h', 'COPYING'] + ['src/' + p for p in C_SOURCES]
+    required = ['include/rnnoise.h', 'src/rnnoise_data.h', 'src/vec_neon.h', 'COPYING'] + ['src/' + p for p in C_SOURCES]
     for name in required:
         if not (vendor / name).is_file():
             raise ValueError(f'Missing RNNoise vendor file: {name}; fetch the pinned model first')
@@ -128,8 +137,10 @@ def main():
     java = root / 'sdk/android/api/org/webrtc/PeerConnectionFactory.java'
     cc = root / 'sdk/android/src/jni/pc/peer_connection_factory.cc'
     build = root / 'sdk/android/BUILD.gn'
+    neon = vendor / 'src/vec_neon.h'
     writes = [(java, patch_java(java.read_text())), (cc, patch_cc(cc.read_text())),
               (build, patch_build(build.read_text(), vendor)),
+              (neon, patch_neon(neon.read_text())),
               (header, Path(__file__).with_name('rnnoise_audio_frame_processor.h').read_text())]
     for path, content in writes:
         path.write_text(content, encoding='utf-8')
