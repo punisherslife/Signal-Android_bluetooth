@@ -7,8 +7,11 @@ from pathlib import Path
 
 def configure(root, memory_mb):
     heap = min(6144, max(2048, memory_mb * 45 // 100))
-    kotlin = min(1536, max(512, memory_mb * 15 // 100))
-    workers = 1 if memory_mb < 12000 else 2
+    # Signal's main Kotlin compilation exhausted the previous 1536 MiB cap.
+    # Restore up to its upstream 4 GiB heap, scaling down on smaller runners.
+    kotlin = min(4096, max(512, memory_mb * 30 // 100))
+    # Give the compiler room without overlapping independent Gradle workers.
+    workers = 1
     path = root / 'gradle.properties'
     text = path.read_text()
     for key, size in (('org.gradle.jvmargs', heap), ('kotlin.daemon.jvmargs', kotlin)):
