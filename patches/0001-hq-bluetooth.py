@@ -69,9 +69,6 @@ edit(
       }
     }""",
             """    fun create(context: Context, eventListener: EventListener?, canUseTelecom: Boolean): SignalAudioManager {
-      if (canUseTelecom) {
-        Log.i(TAG, "Jetpack Telecom audio routing disabled by fork HQ Bluetooth patch")
-      }
       return if (Build.VERSION.SDK_INT >= 31) {
         FullSignalAudioManagerApi31(context, eventListener)
       } else {
@@ -107,11 +104,9 @@ edit(
 
     hqBluetoothAudioEnabled = enabled
     if (enabled) {
-      Log.i(TAG, "HQ Bluetooth enabled: stopping SCO and leaving communication mode")
       signalBluetoothManager.stopScoAudio()
       setMode(AudioManager.MODE_NORMAL, "setHighQualityBluetoothAudio")
     } else if (state != State.UNINITIALIZED) {
-      Log.i(TAG, "HQ Bluetooth disabled: restoring communication mode")
       setMode(AudioManager.MODE_IN_COMMUNICATION, "setHighQualityBluetoothAudio")
     }
 
@@ -151,7 +146,7 @@ edit(
         ?.takeIf { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
 
       if (bluetoothDevice == null) {
-        Log.w(TAG, "HQ Bluetooth requested without an active classic Bluetooth SCO device")
+        Log.w(TAG, "HQ Bluetooth request unavailable")
         return
       }
 
@@ -201,7 +196,6 @@ edit(
         )
         return
       } else {
-        Log.i(TAG, "HQ Bluetooth target disappeared; restoring normal call routing")
         hqBluetoothAudioEnabled = false
         highQualityBluetoothDeviceId = null
         if (state != State.UNINITIALIZED) {

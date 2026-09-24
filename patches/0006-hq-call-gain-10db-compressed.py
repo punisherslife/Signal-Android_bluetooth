@@ -187,14 +187,14 @@ object HqCallGainBridge {
       effect.setTargetGain(targetGainMb)
       val result = effect.setEnabled(true)
       if (result < 0) {
-        Log.w(TAG, "LoudnessEnhancer.setEnabled(true) returned $result")
         failedEnhancerSessionId = enhancerSessionId
         releaseEnhancerLocked()
+        Log.w(TAG, "HQ gain effect update failed")
       }
-    } catch (e: RuntimeException) {
-      Log.w(TAG, "Unable to update LoudnessEnhancer for audio session $enhancerSessionId", e)
+    } catch (_: RuntimeException) {
       failedEnhancerSessionId = enhancerSessionId
       releaseEnhancerLocked()
+      Log.w(TAG, "HQ gain effect update failed")
     }
   }
 
@@ -214,21 +214,17 @@ object HqCallGainBridge {
         enhancer = it
         enhancerSessionId = sessionId
       }
-    } catch (e: RuntimeException) {
-      Log.w(TAG, "LoudnessEnhancer unavailable for audio session $sessionId", e)
+    } catch (_: RuntimeException) {
       failedEnhancerSessionId = sessionId
+      Log.w(TAG, "HQ gain effect unavailable")
       null
     }
   }
 
   private fun setTrackGain(track: AudioTrack, gain: Float) {
     try {
-      val result = track.setVolume(gain.coerceIn(0f, 1f))
-      if (result < 0) {
-        Log.w(TAG, "AudioTrack.setVolume($gain) returned $result")
-      }
-    } catch (e: RuntimeException) {
-      Log.w(TAG, "Unable to update AudioTrack gain", e)
+      track.setVolume(gain.coerceIn(0f, 1f))
+    } catch (_: RuntimeException) {
     }
   }
 
@@ -237,8 +233,7 @@ object HqCallGainBridge {
     currentTrack?.let { track ->
       try {
         track.setVolume(1f)
-      } catch (e: RuntimeException) {
-        Log.w(TAG, "Unable to restore AudioTrack unity gain", e)
+      } catch (_: RuntimeException) {
       }
     }
   }

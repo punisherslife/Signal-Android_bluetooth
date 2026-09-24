@@ -61,7 +61,6 @@ controller = '''  /**
   public synchronized boolean setStrongNoiseSuppressionEnabled(boolean enabled) {
     checkCallManagerExists();
     PeerConnectionFactory.setRnnoiseAudioFrameProcessorEnabled(enabled);
-    Log.i(TAG, "RNNoise Little enabled=" + enabled);
     return true;
   }
 

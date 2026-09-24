@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fix three UI-state issues on top of patches 0001..0009.
 
-1) 1:1 video swap keeps Signal's stock MoveableLocalVideoRenderer in the
-   focused/swapped state so the normal self-preview controls, including the
-   switch-camera button, remain available.
+1) 1:1 maximize swaps the main and small video views. Both small previews
+   support tap-to-expand; the expanded remote preview can swap back or switch
+   the local camera. Stock focused/blurred presentation is bypassed for swaps.
 2) The proximity switch displays the real call-scoped LockManager override,
    so recreating the Compose/PiP UI cannot visually reset the toggle while the
    sensor override is still active.
@@ -29,6 +29,7 @@ CALL_SCREEN = ROOT / "app/src/main/java/org/thoughtcrime/securesms/components/we
 COMPOSE_MEDIATOR = ROOT / "app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/ComposeCallScreenMediator.kt"
 ACTIVE_CALL_MANAGER = ROOT / "app/src/main/java/org/thoughtcrime/securesms/service/webrtc/ActiveCallManager.kt"
 SIGNAL_AUDIO_MANAGER = ROOT / "app/src/main/java/org/thoughtcrime/securesms/webrtc/audio/SignalAudioManager.kt"
+REMOTE_PIP = ROOT / "app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/MoveableRemoteVideoRenderer.kt"
 
 
 def die(message: str) -> None:
@@ -181,166 +182,174 @@ def patch_compose_mediator(text: str) -> str:
 
 
 def patch_call_screen(text: str) -> str:
-    required = [
-        "showSelfPreviewInCall by InCallSelfPreviewPreference.shown.collectAsState()",
-        "oneToOneSwapActive",
-        "oneToOneRemoteParticipant",
-        "MoveableRemoteVideoRenderer(",
-        "LargeLocalVideoRenderer(",
-    ]
-    for marker in required:
-        if marker not in text:
-            die(f"CallScreen.kt is missing expected 0008/0009 marker: {marker}")
-    if "signalCallManager.proximityOverride" in text:
+    if "signalCallManager.proximityOverride" in text or "swappedRemoteExpanded" in text:
         die("CallScreen.kt already appears to contain 0010")
 
-    # Display the real LockManager override rather than only the Compose copy.
-    old_proximity = '''      isProximitySensorEnabled = callScreenState.proximityOverride ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),
-'''
-    new_proximity = '''      isProximitySensorEnabled = org.thoughtcrime.securesms.dependencies.AppDependencies.signalCallManager.proximityOverride
-        ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),
-'''
-    text = replace_once(text, old_proximity, new_proximity, "proximity UI source of truth")
+    text = replace_once(text,
+        "      isProximitySensorEnabled = callScreenState.proximityOverride ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),\n",
+        "      isProximitySensorEnabled = org.thoughtcrime.securesms.dependencies.AppDependencies.signalCallManager.proximityOverride\n"
+        "        ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),\n",
+        "proximity UI source of truth")
 
-    # When self preview is visible, let Signal see the real local render state.
-    # In particular FOCUSED must remain FOCUSED so Signal's normal focused
-    # MoveableLocalVideoRenderer path is used (camera switch included).
-    old_layout_state = '''        val layoutLocalRenderState = when {
+    old = '''        val oneToOneSwapEligible = showSelfPreviewInCall &&
+          !callControlsState.isGroupCall &&
+          localParticipant.isVideoEnabled &&
+          callParticipantsPagerState.callParticipants.size == 1
+        val oneToOneSwapActive = oneToOneSwapEligible &&
+          localRenderState == WebRtcLocalRenderState.FOCUSED
+        val oneToOneRemoteParticipant = if (oneToOneSwapActive) {
+          callParticipantsPagerState.callParticipants.first()
+        } else {
+          null
+        }
+        val layoutLocalRenderState = when {
           oneToOneSwapActive -> WebRtcLocalRenderState.SMALL_RECTANGLE
           !showSelfPreviewInCall -> WebRtcLocalRenderState.GONE
           else -> localRenderState
         }
 '''
-    new_layout_state = '''        val layoutLocalRenderState = if (showSelfPreviewInCall) {
-          localRenderState
+    new = '''        val singleRemoteParticipant = callParticipantsPagerState.callParticipants.singleOrNull()
+        val oneToOneSwapEligible = !callControlsState.isGroupCall &&
+          !callScreenState.isLocalScreenSharing &&
+          !localParticipant.isScreenSharing &&
+          localParticipant.isVideoEnabled &&
+          singleRemoteParticipant != null &&
+          !singleRemoteParticipant.isScreenSharing
+        val oneToOneSwapActive = showSelfPreviewInCall &&
+          oneToOneSwapEligible &&
+          localRenderState == WebRtcLocalRenderState.FOCUSED
+        val oneToOneRemoteParticipant = if (oneToOneSwapActive) {
+          singleRemoteParticipant
         } else {
-          WebRtcLocalRenderState.GONE
+          null
+        }
+        var swappedRemoteExpanded by remember(oneToOneSwapActive, oneToOneRemoteParticipant?.callParticipantId) {
+          mutableStateOf(false)
+        }
+        val layoutLocalRenderState = when {
+          oneToOneSwapActive -> {
+            if (swappedRemoteExpanded) {
+              WebRtcLocalRenderState.EXPANDED
+            } else {
+              WebRtcLocalRenderState.SMALL_RECTANGLE
+            }
+          }
+
+          !showSelfPreviewInCall -> WebRtcLocalRenderState.GONE
+          else -> localRenderState
         }
 '''
-    text = replace_once(text, old_layout_state, new_layout_state, "focused self-preview layout state")
+    text = replace_once(text, old, new, "true swap layout with expandable remote preview")
 
-    # Stop replacing Signal's participant pager with a bare LargeLocalVideoRenderer.
-    # CallElementsLayout will blur the pager while FOCUSED, exactly as stock Signal
-    # does for the focused self preview.
-    old_grid = '''              if (oneToOneSwapActive) {
-                LargeLocalVideoRenderer(
-                  localParticipant = localParticipant,
-                  modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                      onClick = {
-                        scope.launch {
-                          callScreenController.handleEvent(CallScreenController.Event.TOGGLE_CONTROLS)
-                        }
-                      },
-                      enabled = !callControlsState.skipHiddenState
-                    )
-                )
-              } else {
-                CallParticipantsPager(
-                  callParticipantsPagerState = callParticipantsPagerState,
-                  pagerState = callScreenController.callParticipantsVerticalPagerState,
-                  modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                      onClick = {
-                        scope.launch {
-                          callScreenController.handleEvent(CallScreenController.Event.TOGGLE_CONTROLS)
-                        }
-                      },
-                      enabled = !callControlsState.skipHiddenState
-                    ),
-                  onTap = {
-                    if (!callControlsState.skipHiddenState) {
-                      scope.launch {
-                        callScreenController.handleEvent(CallScreenController.Event.TOGGLE_CONTROLS)
-                      }
-                    }
-                  },
-                  onParticipantLongPress = { participant, windowOffset ->
-                    longPressedParticipantId = participant.callParticipantId
-                    longPressWindowOffset = windowOffset
-                  }
-                )
-              }
-'''
-    new_grid = '''              CallParticipantsPager(
-                callParticipantsPagerState = callParticipantsPagerState,
-                pagerState = callScreenController.callParticipantsVerticalPagerState,
-                modifier = Modifier
-                  .fillMaxSize()
-                  .clickable(
-                    onClick = {
-                      scope.launch {
-                        callScreenController.handleEvent(CallScreenController.Event.TOGGLE_CONTROLS)
-                      }
-                    },
-                    enabled = !callControlsState.skipHiddenState
-                  ),
-                onTap = {
-                  if (!callControlsState.skipHiddenState) {
-                    scope.launch {
-                      callScreenController.handleEvent(CallScreenController.Event.TOGGLE_CONTROLS)
-                    }
-                  }
-                },
-                onParticipantLongPress = { participant, windowOffset ->
-                  longPressedParticipantId = participant.callParticipantId
-                  longPressWindowOffset = windowOffset
-                }
-              )
-'''
-    text = replace_once(text, old_grid, new_grid, "restore stock participant pager during swap")
-
-    # Always use Signal's stock local renderer whenever the self preview is shown.
-    # During a swap its FOCUSED state becomes the large self preview, retaining
-    # SelfPipContent and therefore the standard switch-camera button. The remote
-    # participant is then layered above it as the small draggable PiP.
-    old_pip = '''            val swappedRemote = oneToOneRemoteParticipant
-            if (swappedRemote != null) {
-              MoveableRemoteVideoRenderer(
+    # 0008 already puts the local video in the main slot during a swap. Keep
+    # that renderer: mapping FOCUSED to a preview size prevents stock focus blur.
+    old = '''              MoveableRemoteVideoRenderer(
                 remoteParticipant = swappedRemote,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
                 modifier = Modifier.fillMaxSize()
               )
-            } else if (showSelfPreviewInCall) {
-              MoveableLocalVideoRenderer(
-                localParticipant = localParticipant,
-                localRenderState = localRenderState,
-                savedLocalParticipantLandscape = savedLocalParticipantLandscape,
-                onClick = onLocalPictureInPictureClicked,
+'''
+    new = '''              MoveableRemoteVideoRenderer(
+                remoteParticipant = swappedRemote,
+                expanded = swappedRemoteExpanded,
+                onClick = { swappedRemoteExpanded = !swappedRemoteExpanded },
+                isMoreThanOneCameraAvailable = localParticipant.isMoreThanOneCameraAvailable,
                 onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
-                onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
+                onSwapClick = onLocalPictureInPictureFocusClicked,
                 modifier = Modifier.fillMaxSize()
               )
-            }
 '''
-    new_pip = '''            if (showSelfPreviewInCall) {
-              Box(modifier = Modifier.fillMaxSize()) {
-                MoveableLocalVideoRenderer(
-                  localParticipant = localParticipant,
-                  localRenderState = localRenderState,
-                  savedLocalParticipantLandscape = savedLocalParticipantLandscape,
-                  onClick = onLocalPictureInPictureClicked,
-                  onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
-                  onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
-                  modifier = Modifier.fillMaxSize()
-                )
+    return replace_once(text, old, new, "remote preview controls act on the local camera")
 
-                val swappedRemote = oneToOneRemoteParticipant
-                if (swappedRemote != null) {
-                  MoveableRemoteVideoRenderer(
-                    remoteParticipant = swappedRemote,
-                    onSwapClick = onLocalPictureInPictureFocusClicked,
-                    modifier = Modifier.fillMaxSize()
-                  )
-                }
-              }
-            }
+
+def patch_remote_renderer(text: str) -> str:
+    text = replace_once(text, "import androidx.compose.material3.Icon\n",
+                        "import androidx.compose.material3.Icon\nimport androidx.compose.material3.IconButton\n",
+                        "remote preview IconButton import")
+    text = replace_once(text, "import androidx.compose.ui.res.stringResource\n",
+                        "import androidx.compose.ui.res.painterResource\nimport androidx.compose.ui.res.stringResource\n",
+                        "remote preview camera icon import")
+    text = replace_once(text, "  remoteParticipant: CallParticipant,\n",
+                        "  remoteParticipant: CallParticipant,\n"
+                        "  expanded: Boolean,\n"
+                        "  onClick: () -> Unit,\n"
+                        "  isMoreThanOneCameraAvailable: Boolean,\n"
+                        "  onToggleCameraDirectionClick: () -> Unit,\n",
+                        "remote preview controls")
+    text = replace_once(text,
+                        "  val baseSize = rememberSelfPipSize(WebRtcLocalRenderState.SMALL_RECTANGLE)\n",
+                        "  val previewRenderState = if (expanded) {\n"
+                        "    WebRtcLocalRenderState.EXPANDED\n"
+                        "  } else {\n"
+                        "    WebRtcLocalRenderState.SMALL_RECTANGLE\n"
+                        "  }\n"
+                        "  val cornerSize = if (expanded) {\n"
+                        "    CallScreenMetrics.ExpandedRendererCornerSize\n"
+                        "  } else {\n"
+                        "    CallScreenMetrics.OverflowParticipantRendererCornerSize\n"
+                        "  }\n"
+                        "  val baseSize = rememberSelfPipSize(previewRenderState)\n",
+                        "stock compact and expanded preview sizes")
+    text = replace_once(text,
+                        "        .clip(RoundedCornerShape(16.dp))\n",
+                        "        .clip(RoundedCornerShape(cornerSize))\n"
+                        "        .clickable(onClick = onClick)\n",
+                        "tap to expand or collapse remote preview")
+    old = '''      Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+          .align(Alignment.TopEnd)
+          .padding(8.dp)
+          .size(36.dp)
+          .background(color = MaterialTheme.colorScheme.secondaryContainer, shape = CircleShape)
+          .clickable(onClick = onSwapClick)
+      ) {
+        Icon(
+          imageVector = ImageVector.vectorResource(CoreUiR.drawable.symbol_maximize_24),
+          tint = MaterialTheme.colorScheme.onSecondaryContainer,
+          contentDescription = stringResource(R.string.MoveableLocalVideoRenderer__swap_video),
+          modifier = Modifier.size(20.dp)
+        )
+      }
 '''
-    text = replace_once(text, old_pip, new_pip, "stock focused local preview + remote PiP")
+    new = '''      if (expanded) {
+        IconButton(
+          onClick = onSwapClick,
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(8.dp)
+            .size(48.dp)
+            .background(color = MaterialTheme.colorScheme.secondaryContainer, shape = CircleShape)
+        ) {
+          Icon(
+            imageVector = ImageVector.vectorResource(CoreUiR.drawable.symbol_maximize_24),
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            contentDescription = stringResource(R.string.MoveableLocalVideoRenderer__swap_video),
+            modifier = Modifier.size(24.dp)
+          )
+        }
 
-    return text
+        if (isMoreThanOneCameraAvailable) {
+          IconButton(
+            onClick = onToggleCameraDirectionClick,
+            modifier = Modifier
+              .align(Alignment.BottomEnd)
+              .padding(10.dp)
+              .size(48.dp)
+              .background(color = MaterialTheme.colorScheme.secondaryContainer, shape = CircleShape)
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.symbol_switch_24),
+              tint = MaterialTheme.colorScheme.onSecondaryContainer,
+              contentDescription = stringResource(R.string.SwitchCameraButton__switch_camera_direction),
+              modifier = Modifier.size(24.dp)
+            )
+          }
+        }
+      }
+'''
+    return replace_once(text, old, new, "expanded swap-back and local camera buttons")
+
 
 
 patched_lock = patch_lock_manager(read(LOCK_MANAGER))
@@ -349,6 +358,7 @@ patched_audio = patch_signal_audio_manager(read(SIGNAL_AUDIO_MANAGER))
 patched_active = patch_active_call_manager(read(ACTIVE_CALL_MANAGER))
 patched_mediator = patch_compose_mediator(read(COMPOSE_MEDIATOR))
 patched_call_screen = patch_call_screen(read(CALL_SCREEN))
+patched_remote_pip = patch_remote_renderer(read(REMOTE_PIP))
 
 write(LOCK_MANAGER, patched_lock)
 write(SIGNAL_CALL_MANAGER, patched_manager)
@@ -356,9 +366,10 @@ write(SIGNAL_AUDIO_MANAGER, patched_audio)
 write(ACTIVE_CALL_MANAGER, patched_active)
 write(COMPOSE_MEDIATOR, patched_mediator)
 write(CALL_SCREEN, patched_call_screen)
+write(REMOTE_PIP, patched_remote_pip)
 
 print("0010-preview-proximity-state-fix: proximity switch now reflects the live LockManager override")
 print("0010-preview-proximity-state-fix: HQ Bluetooth switch now restores from the live SignalAudioManager state")
 print("0010-preview-proximity-state-fix: PiP/UI recreation no longer causes visual-only temporary-toggle resets")
-print("0010-preview-proximity-state-fix: swapped local video uses Signal's stock focused self-preview renderer")
-print("0010-preview-proximity-state-fix: stock switch-camera control remains available while swapped")
+print("0010-preview-proximity-state-fix: 1:1 maximize now fully swaps main and small video views")
+print("0010-preview-proximity-state-fix: remote preview expands with swap-back and local camera controls")

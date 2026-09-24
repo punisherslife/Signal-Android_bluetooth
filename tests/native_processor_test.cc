@@ -97,6 +97,30 @@ int main() {
     const int prev = processed; q.Process(frame());
     assert(result->data()[0] == 100 && processed == prev);
   }
+  // OFF after real ON processing must preserve every sample, including quiet
+  // input and full-scale input. A residual voice gate would fail this check.
+  output_mode = 0;
+  SetRnnoiseEnabled(true);
+  p.Process(frame());
+  SetRnnoiseEnabled(false);
+  const int off_processed = processed;
+  const int off_initialized = initialized;
+  const int amplitudes[] = {-32768, -30000, -100, -1, 0, 1, 10, 100, 30000, 32767};
+  for (int count = 0; count < 200; ++count) {
+    f = frame();
+    identity = f.get();
+    for (int sample = 0; sample < 480; ++sample) {
+      f->mutable_data()[sample] = amplitudes[(sample + count) % 10];
+    }
+    const int off_allocations = allocations;
+    p.Process(std::move(f));
+    assert(result.get() == identity && result->timestamp_ == 777);
+    for (int sample = 0; sample < 480; ++sample) {
+      assert(result->data()[sample] == amplitudes[(sample + count) % 10]);
+    }
+    assert(processed == off_processed && initialized == off_initialized);
+    assert(allocations == off_allocations);
+  }
   // Concurrent Process calls and toggles must not race the model or sink.
   std::atomic<int> delivered{0};
   p.SetSink([&](std::unique_ptr<AudioFrame> f) { assert(f); ++delivered; });
@@ -119,5 +143,5 @@ int main() {
   assert(!removed);
   { std::lock_guard<std::mutex> lock(gate); release = true; cv.notify_all(); }
   sending.join(); removing.join(); assert(removed);
-  std::cout << "PASS: bypass, transitions, reset, mute, formats, saturation, NaN/Inf, failures, malloc count, concurrent delivery, sink shutdown\n";
+  std::cout << "PASS: bypass (including 200 OFF-after-ON frames), transitions, reset, mute, formats, saturation, NaN/Inf, failures, malloc count, concurrent delivery, sink shutdown\n";
 }

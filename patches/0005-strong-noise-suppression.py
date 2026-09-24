@@ -150,10 +150,11 @@ def patch_signal_call_manager(text: str) -> str:
       boolean strongNoiseSuppressionEnabled = StrongNoiseSuppressionPreference.isEnabled();
       try {
         if (!this.callManager.setStrongNoiseSuppressionEnabled(strongNoiseSuppressionEnabled)) {
-          Log.w(TAG, "Unable to restore RNNoise Little preference");
+          Log.w(TAG, "RNNoise preference restore failed");
         }
-      } catch (RuntimeException e) {
-        Log.w(TAG, "Unable to restore RNNoise Little preference", e);
+      } catch (RuntimeException ignored) {
+        // Keep call setup available if this optional processor is unavailable.
+        Log.w(TAG, "RNNoise preference restore failed");
       }
     }
 
@@ -172,6 +173,7 @@ def patch_signal_call_manager(text: str) -> str:
    */
   public boolean setStrongNoiseSuppressionEnabled(boolean enabled) {
     if (callManager == null) {
+      Log.w(TAG, "RNNoise request failed");
       return false;
     }
 
@@ -179,10 +181,12 @@ def patch_signal_call_manager(text: str) -> str:
       boolean applied = callManager.setStrongNoiseSuppressionEnabled(enabled);
       if (applied) {
         StrongNoiseSuppressionPreference.setEnabled(enabled);
+      } else {
+        Log.w(TAG, "RNNoise request failed");
       }
       return applied;
-    } catch (RuntimeException e) {
-      Log.w(TAG, "Unable to toggle RNNoise Little", e);
+    } catch (RuntimeException ignored) {
+      Log.w(TAG, "RNNoise request failed");
       return false;
     }
   }

@@ -257,7 +257,6 @@ package org.thoughtcrime.securesms.webrtc.audio
 import android.content.Context
 import android.media.AudioTrack
 import android.media.audiofx.LoudnessEnhancer
-import org.signal.core.util.logging.Log
 import kotlin.math.log10
 import kotlin.math.roundToInt
 
@@ -268,7 +267,6 @@ import kotlin.math.roundToInt
  * once at playout start. Slider/HQ-state changes update that track directly.
  */
 object HqCallGainBridge {
-  private val TAG = Log.tag(HqCallGainBridge::class.java)
   private const val PREFS_NAME = "hq_call_gain"
   private const val PREF_GAIN_PERCENT = "gain_percent"
   private const val DEFAULT_GAIN_PERCENT = 100
@@ -376,8 +374,7 @@ object HqCallGainBridge {
     try {
       effect.setTargetGain(targetGainMb)
       effect.setEnabled(true)
-    } catch (e: RuntimeException) {
-      Log.w(TAG, "Unable to update LoudnessEnhancer for audio session ${track.audioSessionId}", e)
+    } catch (_: RuntimeException) {
       releaseEnhancerLocked()
       failedEnhancerSessionId = track.audioSessionId
     }
@@ -398,18 +395,14 @@ object HqCallGainBridge {
         enhancer = it
         enhancerSessionId = sessionId
       }
-    } catch (e: RuntimeException) {
-      Log.w(TAG, "LoudnessEnhancer unavailable for audio session $sessionId", e)
+    } catch (_: RuntimeException) {
       failedEnhancerSessionId = sessionId
       null
     }
   }
 
   private fun setTrackGain(track: AudioTrack, gain: Float) {
-    val result = track.setVolume(gain)
-    if (result < 0) {
-      Log.w(TAG, "AudioTrack.setVolume($gain) returned $result")
-    }
+    track.setVolume(gain)
   }
 
   private fun resetCurrentTrackLocked() {
@@ -417,8 +410,7 @@ object HqCallGainBridge {
     currentTrack?.let { track ->
       try {
         track.setVolume(1f)
-      } catch (e: RuntimeException) {
-        Log.w(TAG, "Unable to restore AudioTrack unity gain", e)
+      } catch (_: RuntimeException) {
       }
     }
   }
