@@ -99,7 +99,7 @@ def patch_popup(text: str) -> str:
     text = replace_once(
         text,
         '    SystemPipSelfPreviewToggle()\n',
-        '    SelfPreviewMenu()\n',
+        '    if (!isScreenSharing) {\n      SelfPreviewMenu()\n    }\n',
         'top-level self-preview row',
     )
 
@@ -129,6 +129,9 @@ private fun SelfPreviewMenu() {
   }
   var showInPip by remember {
     mutableStateOf(!SystemPipSelfPreviewPreference.isHidden())
+  }
+  var showCameraIndicator by remember {
+    mutableStateOf(SystemPipSelfPreviewPreference.showCameraIndicator())
   }
 
   Box(
@@ -198,6 +201,17 @@ private fun SelfPreviewMenu() {
           SystemPipSelfPreviewPreference.setHidden(!showInPip)
         }
       )
+
+      if (!showInPip) {
+        DropdownMenuItem(
+          text = { Text(stringResource(R.string.CallOverflowPopupWindow__show_camera_indicator)) },
+          trailingIcon = { Switch(checked = showCameraIndicator, onCheckedChange = null) },
+          onClick = {
+            showCameraIndicator = !showCameraIndicator
+            SystemPipSelfPreviewPreference.setShowCameraIndicator(showCameraIndicator)
+          }
+        )
+      }
     }
   }
 }
@@ -226,7 +240,8 @@ def patch_call_screen(text: str) -> str:
         val oneToOneSwapActive = oneToOneSwapEligible &&
           localRenderState == WebRtcLocalRenderState.FOCUSED
 '''
-    new_state = '''        val showSelfPreviewInCall by InCallSelfPreviewPreference.shown.collectAsState()
+    new_state = '''        val selfPreviewPreference by InCallSelfPreviewPreference.shown.collectAsState()
+        val showSelfPreviewInCall = callScreenState.isLocalScreenSharing || localParticipant.isScreenSharing || selfPreviewPreference
         val oneToOneSwapEligible = showSelfPreviewInCall &&
           !callControlsState.isGroupCall &&
           localParticipant.isVideoEnabled &&
@@ -254,6 +269,8 @@ def patch_call_screen(text: str) -> str:
               MoveableRemoteVideoRenderer(
                 remoteParticipant = swappedRemote,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = previewVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             } else {
@@ -264,6 +281,8 @@ def patch_call_screen(text: str) -> str:
                 onClick = onLocalPictureInPictureClicked,
                 onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
                 onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = isLocalVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             }
@@ -272,6 +291,8 @@ def patch_call_screen(text: str) -> str:
               MoveableRemoteVideoRenderer(
                 remoteParticipant = swappedRemote,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = previewVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             } else if (showSelfPreviewInCall) {
@@ -282,6 +303,8 @@ def patch_call_screen(text: str) -> str:
                 onClick = onLocalPictureInPictureClicked,
                 onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
                 onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = isLocalVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             }
@@ -294,7 +317,8 @@ def patch_strings(text: str) -> str:
         die('strings.xml already appears to contain patch 0009')
 
     old = '    <string name="CallOverflowPopupWindow__hide_self_camera_in_pip">Hide self camera in PiP</string>\n'
-    new = '''    <string name="CallOverflowPopupWindow__self_preview">Self preview</string>
+    new = '''    <string name="CallOverflowPopupWindow__show_camera_indicator">Show camera-on indicator</string>
+    <string name="CallOverflowPopupWindow__self_preview">Self preview</string>
     <string name="CallOverflowPopupWindow__show_self_preview_in_call">Show in call</string>
     <string name="CallOverflowPopupWindow__show_self_preview_in_pip">Show in Picture-in-Picture</string>
 '''
@@ -360,3 +384,4 @@ print('0009-self-preview-menu: one top-level Self preview row replaces the PiP-o
 print('0009-self-preview-menu: submenu contains Show in call + Show in Picture-in-Picture')
 print('0009-self-preview-menu: in-call preview hiding is persistent, reactive, and display-only')
 print('0009-self-preview-menu: pre-join/outgoing camera framing remains stock')
+

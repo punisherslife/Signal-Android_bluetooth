@@ -117,13 +117,16 @@ private fun StrongNoiseSuppressionToggle() {
 
 def patch_system_pip(text: str) -> str:
     if "PictureInPictureSelfPip(" not in text or "PIP_METRICS_SELF_PORTRAIT_WIDTH" not in text:
-        die("PictureInPictureCallScreen.kt is not the expected v8.25.2 shape")
+        die("PictureInPictureCallScreen.kt is not the expected v8.28.4 shape")
     if "hideSelfPreviewInSystemPip" in text or "CompactSystemPipAudioIndicator" in text:
         die("PictureInPictureCallScreen.kt already appears to contain patch 0007")
 
     text = add_imports(
         text,
-        ["org.thoughtcrime.securesms.service.webrtc.SystemPipSelfPreviewPreference"],
+        ["org.thoughtcrime.securesms.service.webrtc.SystemPipSelfPreviewPreference",
+         "androidx.compose.material3.Icon", "androidx.compose.ui.graphics.vector.ImageVector",
+         "androidx.compose.ui.res.stringResource", "androidx.compose.ui.res.vectorResource",
+         "org.thoughtcrime.securesms.R", "androidx.compose.ui.AbsoluteAlignment"],
         "PictureInPictureCallScreen.kt",
     )
 
@@ -146,6 +149,7 @@ private val PIP_METRICS_COMPACT_AUDIO_INNER_PADDING = 4.dp
     val hideSelfPreviewInSystemPip = remember {
       SystemPipSelfPreviewPreference.isHidden()
     }
+    val showCameraIndicator = remember { SystemPipSelfPreviewPreference.showCameraIndicator() }
     val remoteParticipant = callParticipantsPagerState.focusedParticipant ?: callParticipantsPagerState.callParticipants.first()
 '''
     text = replace_once(text, old_head, new_head, "system PiP preference read")
@@ -262,6 +266,22 @@ private val PIP_METRICS_COMPACT_AUDIO_INNER_PADDING = 4.dp
         modifier = Modifier.align(Alignment.BottomEnd)
       )
     }
+
+    if (hideSelfPreviewInSystemPip && showCameraIndicator &&
+      localParticipant.isVideoEnabled && !localParticipant.isScreenSharing
+    ) {
+      Icon(
+        imageVector = ImageVector.vectorResource(R.drawable.symbol_video_24),
+        contentDescription = stringResource(R.string.PictureInPictureCallScreen__camera_on),
+        tint = Color.White,
+        modifier = Modifier
+          .align(AbsoluteAlignment.TopLeft)
+          .padding(6.dp)
+          .size(22.dp)
+          .background(Color.Black.copy(alpha = 0.7f), CircleShape)
+          .padding(4.dp)
+      )
+    }
   }
 }
 '''
@@ -315,8 +335,8 @@ def patch_view_model(text: str) -> str:
 def patch_strings(text: str) -> str:
     if "CallOverflowPopupWindow__hide_self_camera_in_pip" in text:
         die("strings.xml already appears to contain patch 0007")
-    old = '    <string name="CallOverflowPopupWindow__strong_noise_suppression">Strong noise suppression</string>\n'
-    new = old + '    <string name="CallOverflowPopupWindow__hide_self_camera_in_pip">Hide self camera in PiP</string>\n'
+    old = '    <string name="CallOverflowPopupWindow__strong_noise_suppression">Noise suppression</string>\n'
+    new = old + '    <string name="CallOverflowPopupWindow__hide_self_camera_in_pip">Hide self camera in PiP</string>\n    <string name="PictureInPictureCallScreen__camera_on">Your camera is on</string>\n'
     return replace_once(text, old, new, "system PiP string anchor")
 
 
@@ -333,6 +353,15 @@ import org.thoughtcrime.securesms.dependencies.AppDependencies
 object SystemPipSelfPreviewPreference {
   private const val PREFS_NAME = "system_pip_self_preview"
   private const val PREF_HIDDEN = "hidden"
+  private const val PREF_CAMERA_INDICATOR = "camera_indicator"
+
+  @JvmStatic
+  fun showCameraIndicator(): Boolean = preferences().getBoolean(PREF_CAMERA_INDICATOR, true)
+
+  @JvmStatic
+  fun setShowCameraIndicator(shown: Boolean) {
+    preferences().edit().putBoolean(PREF_CAMERA_INDICATOR, shown).apply()
+  }
 
   @JvmStatic
   fun isHidden(): Boolean {
@@ -369,3 +398,4 @@ write(PREF, PREF_SOURCE)
 print("0007-hide-self-camera-system-pip: self-preview rectangle can be hidden without disabling camera transmission")
 print("0007-hide-self-camera-system-pip: system PiP uses compact 22dp remote-left/local-right audio indicators")
 print("0007-hide-self-camera-system-pip: system PiP remains eligible during local screen sharing")
+

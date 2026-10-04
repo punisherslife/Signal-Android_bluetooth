@@ -4,7 +4,7 @@
 1) 1:1 maximize swaps the main and small video views. Both small previews
    support tap-to-expand; the expanded remote preview can swap back or switch
    the local camera. Stock focused/blurred presentation is bypassed for swaps.
-2) The proximity switch displays the real call-scoped LockManager override,
+2) The proximity switch displays the effective LockManager proximity setting,
    so recreating the Compose/PiP UI cannot visually reset the toggle while the
    sensor override is still active.
 3) The HQ Bluetooth switch restores its UI from the live SignalAudioManager
@@ -178,7 +178,25 @@ def patch_compose_mediator(text: str) -> str:
         }
       }
 '''
-    return replace_once(text, old, new, "restore live temporary-toggle state after UI recreation")
+    text = replace_once(text, old, new, "restore live temporary-toggle state after UI recreation")
+    text = replace_once(text,
+        "      val callControlsState by viewModel.getCallControlsState().collectAsStateWithLifecycle(CallControlsState())\n",
+        "      val baseCallControlsState by viewModel.getCallControlsState().collectAsStateWithLifecycle(CallControlsState())\n",
+        "base controls state")
+    anchor = "      val dialog by callScreenViewModel.dialog.collectAsStateWithLifecycle(CallScreenDialogType.NONE)\n"
+    controls = """      val showSelfPreview by org.thoughtcrime.securesms.service.webrtc.InCallSelfPreviewPreference.shown.collectAsStateWithLifecycle()
+      val singleRemote = callParticipantsPagerState.callParticipants.singleOrNull()
+      val swapCanHideControls = webRtcCallState.inOngoingCall &&
+        showSelfPreview && !baseCallControlsState.isGroupCall &&
+        !callScreenState.isLocalScreenSharing && !isLocalScreenSharing && !callParticipantsState.localParticipant.isScreenSharing &&
+        callParticipantsState.localParticipant.isVideoEnabled &&
+        singleRemote != null && !singleRemote.isScreenSharing &&
+        localRenderState == WebRtcLocalRenderState.FOCUSED
+      val callControlsState = remember(baseCallControlsState, swapCanHideControls) {
+        if (swapCanHideControls) baseCallControlsState.copy(skipHiddenState = false) else baseCallControlsState
+      }
+"""
+    return replace_once(text, anchor, controls + anchor, "allow hiding controls while local camera is the main view")
 
 
 def patch_call_screen(text: str) -> str:
@@ -187,9 +205,13 @@ def patch_call_screen(text: str) -> str:
 
     text = replace_once(text,
         "      isProximitySensorEnabled = callScreenState.proximityOverride ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),\n",
-        "      isProximitySensorEnabled = org.thoughtcrime.securesms.dependencies.AppDependencies.signalCallManager.proximityOverride\n"
-        "        ?: (callControlsState.audioOutput == WebRtcAudioOutput.HANDSET),\n",
+        "      isProximitySensorEnabled = proximityEnabled,\n",
         "proximity UI source of truth")
+    text = replace_once(text,
+        "  val additionalActionsState = remember(\n",
+        "  val proximityEnabled = org.thoughtcrime.securesms.dependencies.AppDependencies.signalCallManager.isProximityEnabled\n"
+        "  val additionalActionsState = remember(\n    proximityEnabled,\n",
+        "refresh proximity UI when effective sensor state changes")
 
     old = '''        val oneToOneSwapEligible = showSelfPreviewInCall &&
           !callControlsState.isGroupCall &&
@@ -201,6 +223,11 @@ def patch_call_screen(text: str) -> str:
           callParticipantsPagerState.callParticipants.first()
         } else {
           null
+        }
+        val previewVideoLandscape = if (oneToOneRemoteParticipant != null) {
+          rememberIsLocalVideoLandscape(oneToOneRemoteParticipant)
+        } else {
+          isLocalVideoLandscape
         }
         val layoutLocalRenderState = when {
           oneToOneSwapActive -> WebRtcLocalRenderState.SMALL_RECTANGLE
@@ -226,6 +253,11 @@ def patch_call_screen(text: str) -> str:
         var swappedRemoteExpanded by remember(oneToOneSwapActive, oneToOneRemoteParticipant?.callParticipantId) {
           mutableStateOf(false)
         }
+        val previewVideoLandscape = if (oneToOneRemoteParticipant != null) {
+          rememberIsLocalVideoLandscape(oneToOneRemoteParticipant)
+        } else {
+          isLocalVideoLandscape
+        }
         val layoutLocalRenderState = when {
           oneToOneSwapActive -> {
             if (swappedRemoteExpanded) {
@@ -246,6 +278,8 @@ def patch_call_screen(text: str) -> str:
     old = '''              MoveableRemoteVideoRenderer(
                 remoteParticipant = swappedRemote,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = previewVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
 '''
@@ -256,6 +290,8 @@ def patch_call_screen(text: str) -> str:
                 isMoreThanOneCameraAvailable = localParticipant.isMoreThanOneCameraAvailable,
                 onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = previewVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
 '''
@@ -368,8 +404,9 @@ write(COMPOSE_MEDIATOR, patched_mediator)
 write(CALL_SCREEN, patched_call_screen)
 write(REMOTE_PIP, patched_remote_pip)
 
-print("0010-preview-proximity-state-fix: proximity switch now reflects the live LockManager override")
+print("0010-preview-proximity-state-fix: proximity switch now reflects the effective LockManager setting")
 print("0010-preview-proximity-state-fix: HQ Bluetooth switch now restores from the live SignalAudioManager state")
 print("0010-preview-proximity-state-fix: PiP/UI recreation no longer causes visual-only temporary-toggle resets")
 print("0010-preview-proximity-state-fix: 1:1 maximize now fully swaps main and small video views")
 print("0010-preview-proximity-state-fix: remote preview expands with swap-back and local camera controls")
+

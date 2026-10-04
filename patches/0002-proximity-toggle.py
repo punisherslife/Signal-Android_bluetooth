@@ -52,6 +52,7 @@ edit(
             """  private boolean     proximityDisabled = false;
   private Boolean     proximityOverride = null;
   private PhoneState  currentPhoneState = PhoneState.IDLE;
+  private boolean     proximityRouteHandset = true;
 """,
         ),
         (
@@ -64,7 +65,7 @@ edit(
         setLockState(LockState.PARTIAL);
         break;
       case INTERACTIVE:
-        setLockState(LockState.FULL);
+        setLockState(LockState.FULL_WAKE_UP);
         break;
       case IN_HANDS_FREE_CALL:
         setLockState(LockState.PARTIAL);
@@ -107,7 +108,7 @@ edit(
         setLockState(LockState.PARTIAL);
         break;
       case INTERACTIVE:
-        setLockState(LockState.FULL);
+        setLockState(LockState.FULL_WAKE_UP);
         break;
       case IN_HANDS_FREE_CALL:
         if (Boolean.TRUE.equals(proximityOverride)) {
@@ -123,7 +124,7 @@ edit(
         updateInCallLockState();
         break;
       case IN_CALL:
-        proximityDisabled = Boolean.FALSE.equals(proximityOverride);
+        proximityDisabled = proximityOverride != null ? !proximityOverride : !proximityRouteHandset;
         updateInCallLockState();
         break;
     }
@@ -133,7 +134,49 @@ edit(
     ],
 )
 
-# 2) Keep LockManager private. Expose only the two proximity operations we need
+# Bind automatic proximity to the actual route, even when a later phone-state
+# callback still reports IN_CALL. A route change clears the manual override.
+insert_before_outer_class_end(
+    "app/src/main/java/org/thoughtcrime/securesms/webrtc/locks/LockManager.java",
+    """
+  public synchronized void onAudioRouteChanged(boolean handset, boolean resetOverride) {
+    boolean changed = proximityRouteHandset != handset || (resetOverride && proximityOverride != null);
+    proximityRouteHandset = handset;
+    if (resetOverride) {
+      proximityOverride = null;
+    }
+    if (changed) {
+      applyPhoneState(currentPhoneState);
+    }
+  }
+
+  public synchronized boolean isProximityEnabled() {
+    return !proximityDisabled && (currentPhoneState == PhoneState.IN_CALL ||
+                                 currentPhoneState == PhoneState.IN_VIDEO ||
+                                 currentPhoneState == PhoneState.IN_HANDS_FREE_CALL);
+  }
+""",
+    "public synchronized void onAudioRouteChanged(",
+)
+
+# Disabling proximity should release the screen immediately. Keep the stock
+# wait-for-far behavior on ordinary hangup, where proximityDisabled is false.
+lock_path = ROOT / "app/src/main/java/org/thoughtcrime/securesms/webrtc/locks/LockManager.java"
+lock_text = lock_path.read_text(encoding="utf-8")
+if lock_text.count("        proximityLock.release();") != 4:
+    raise RuntimeError("Unexpected LockManager proximity-release shape")
+lock_path.write_text(lock_text.replace("        proximityLock.release();",
+                                      "        proximityLock.release(!proximityDisabled);"), encoding="utf-8")
+edit(
+    "app/src/main/java/org/thoughtcrime/securesms/webrtc/locks/ProximityLock.java",
+    [
+        ("  public void release() {\n", "  public void release(boolean waitForNoProximity) {\n"),
+        ("    proximityLock.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY);",
+         "    proximityLock.release(waitForNoProximity ? PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY : 0);"),
+    ],
+)
+
+# 2) Keep LockManager private. Expose the proximity operations/state we need
 # through SignalCallManager, which is already the call UI's public dependency.
 insert_before_outer_class_end(
     "app/src/main/java/org/thoughtcrime/securesms/service/webrtc/SignalCallManager.java",
@@ -144,6 +187,10 @@ insert_before_outer_class_end(
 
   public void clearProximityOverride() {
     lockManager.clearProximityOverride();
+  }
+
+  public boolean isProximityEnabled() {
+    return lockManager.isProximityEnabled();
   }
 """,
     "public void setProximityOverride(boolean enabled)",
@@ -174,8 +221,8 @@ edit(
 """,
             """    if (routeChanged) {
       signalAudioManager?.handleCommand(AudioManagerCommand.SetHighQualityBluetoothAudio(false))
-      callManager.lockManager.clearProximityOverride()
     }
+    callManager.lockManager.onAudioRouteChanged(activeDevice == SignalAudioManager.AudioDevice.EARPIECE, routeChanged)
 """,
         ),
     ],

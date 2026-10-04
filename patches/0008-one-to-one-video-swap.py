@@ -50,7 +50,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 def patch_call_screen(text: str) -> str:
     if "MoveableLocalVideoRenderer(" not in text or "CallParticipantsPager(" not in text:
-        die("CallScreen.kt is not the expected v8.25.2 shape")
+        die("CallScreen.kt is not the expected v8.28.4 shape")
     if "oneToOneSwapActive" in text or "MoveableRemoteVideoRenderer(" in text:
         die("CallScreen.kt already appears to contain patch 0008")
 
@@ -74,6 +74,11 @@ def patch_call_screen(text: str) -> str:
           callParticipantsPagerState.callParticipants.first()
         } else {
           null
+        }
+        val previewVideoLandscape = if (oneToOneRemoteParticipant != null) {
+          rememberIsLocalVideoLandscape(oneToOneRemoteParticipant)
+        } else {
+          isLocalVideoLandscape
         }
         val layoutLocalRenderState = if (oneToOneSwapActive) {
           WebRtcLocalRenderState.SMALL_RECTANGLE
@@ -163,6 +168,8 @@ def patch_call_screen(text: str) -> str:
               onClick = onLocalPictureInPictureClicked,
               onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
               onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
+              isVideoLandscape = isLocalVideoLandscape,
+              margin = pipMargin,
               modifier = Modifier.fillMaxSize()
             )
           },
@@ -173,6 +180,8 @@ def patch_call_screen(text: str) -> str:
               MoveableRemoteVideoRenderer(
                 remoteParticipant = swappedRemote,
                 onSwapClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = previewVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             } else {
@@ -183,6 +192,8 @@ def patch_call_screen(text: str) -> str:
                 onClick = onLocalPictureInPictureClicked,
                 onToggleCameraDirectionClick = callScreenControlsListener::onCameraDirectionChanged,
                 onFocusLocalParticipantClick = onLocalPictureInPictureFocusClicked,
+                isVideoLandscape = isLocalVideoLandscape,
+                margin = pipMargin,
                 modifier = Modifier.fillMaxSize()
               )
             }
@@ -212,13 +223,19 @@ def patch_call_screen(text: str) -> str:
 '''
     text = replace_once(text, old_audio, new_audio, "remote audio indicator")
 
-    old_layout_state = '''          bottomInset = padding,
+    old_layout_state = '''          bottomInset = bottomInset,
+          pipBottomInset = pipBottomInset,
           bottomSheetWidth = CallScreenMetrics.SheetMaxWidth,
+          isLocalVideoLandscape = isLocalVideoLandscape,
+          pipMargin = pipMargin,
           localRenderState = localRenderState,
           modifier = Modifier.fillMaxSize()
 '''
-    new_layout_state = '''          bottomInset = padding,
+    new_layout_state = '''          bottomInset = bottomInset,
+          pipBottomInset = pipBottomInset,
           bottomSheetWidth = CallScreenMetrics.SheetMaxWidth,
+          isLocalVideoLandscape = previewVideoLandscape,
+          pipMargin = pipMargin,
           localRenderState = layoutLocalRenderState,
           modifier = Modifier.fillMaxSize()
 '''
@@ -239,6 +256,9 @@ def patch_view_model(text: str) -> str:
       val returnOneToOneSwapToExpanded = it.groupCallState == WebRtcViewModel.GroupCallState.IDLE &&
         it.allRemoteParticipants.size == 1 &&
         it.localParticipant.isVideoEnabled &&
+        !it.localParticipant.isScreenSharing &&
+        !isLocalScreenSharing.value &&
+        !it.allRemoteParticipants.first().isScreenSharing &&
         it.localRenderState == WebRtcLocalRenderState.FOCUSED
 
       if (returnOneToOneSwapToExpanded) {
@@ -271,15 +291,17 @@ REMOTE_PIP_SOURCE = r'''/*
 
 package org.thoughtcrime.securesms.components.webrtc.v2
 
-import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -290,9 +312,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import org.thoughtcrime.securesms.R
@@ -301,16 +323,16 @@ import org.thoughtcrime.securesms.events.CallParticipant
 import org.signal.core.ui.R as CoreUiR
 
 /** Small draggable remote view shown while local video is the main view in a 1:1 call. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MoveableRemoteVideoRenderer(
   remoteParticipant: CallParticipant,
   onSwapClick: () -> Unit,
+  isVideoLandscape: Boolean,
+  margin: Dp = PipMargin,
   modifier: Modifier = Modifier
 ) {
   val baseSize = rememberSelfPipSize(WebRtcLocalRenderState.SMALL_RECTANGLE)
-  val remoteAspectRatio = rememberParticipantAspectRatio(remoteParticipant.videoSink)
-  val configurationLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-  val isVideoLandscape = remoteAspectRatio?.let { it > 1f } ?: configurationLandscape
   val targetSize = remember(baseSize, isVideoLandscape) {
     if (isVideoLandscape) {
       DpSize(baseSize.height, baseSize.width)
@@ -326,9 +348,9 @@ fun MoveableRemoteVideoRenderer(
     modifier = Modifier
       .fillMaxSize()
       .then(modifier)
-      .statusBarsPadding()
+      .windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility)
       .displayCutoutPadding()
-      .padding(16.dp)
+      .padding(margin)
   ) {
     Box(
       modifier = Modifier
@@ -379,3 +401,4 @@ write(STRINGS, patched_strings)
 print("0008-one-to-one-video-swap: stock small preview/camera-switch/first expansion behavior preserved")
 print("0008-one-to-one-video-swap: second-stage maximize button performs 1:1 local/remote visual swap")
 print("0008-one-to-one-video-swap: compact remote PiP button swaps back to the expanded local preview")
+

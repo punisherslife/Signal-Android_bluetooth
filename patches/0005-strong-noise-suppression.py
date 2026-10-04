@@ -203,7 +203,7 @@ def patch_strings(text: str) -> str:
     old = '''    <string name="CallOverflowPopupWindow__proximity_sensor">Proximity sensor</string>
 '''
     new = '''    <string name="CallOverflowPopupWindow__proximity_sensor">Proximity sensor</string>
-    <string name="CallOverflowPopupWindow__strong_noise_suppression">Strong noise suppression</string>
+    <string name="CallOverflowPopupWindow__strong_noise_suppression">Noise suppression</string>
 '''
     return replace_once(text, old, new, "noise suppression string anchor")
 
@@ -257,3 +257,4 @@ print("0005-strong-noise-suppression: added persistent RNNoise Little toggle")
 print("0005-strong-noise-suppression: OFF keeps stock Signal processing; ON adds native RNNoise")
 print("0005-strong-noise-suppression: live toggle changes only a native bypass flag")
 print("0005-strong-noise-suppression: requires tools/rnnoise custom RingRTC/WebRTC AAR")
+
