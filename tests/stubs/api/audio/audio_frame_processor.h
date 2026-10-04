@@ -3,7 +3,7 @@
 #include <memory>
 namespace webrtc {
 class AudioFrame;
-// Test double for the public interface checked against WebRTC 7871f.
+// Test double for the public interface checked against WebRTC 7871k.
 class AudioFrameProcessor {
  public:
   using OnAudioFrameCallback = std::function<void(std::unique_ptr<AudioFrame>)>;
@@ -12,3 +12,4 @@ class AudioFrameProcessor {
   virtual void SetSink(OnAudioFrameCallback) = 0;
 };
 }
+
