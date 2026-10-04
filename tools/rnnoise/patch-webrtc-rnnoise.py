@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install RNNoise into the verified WebRTC 7871f Android source layout.
+"""Install RNNoise into the verified WebRTC 7871k Android source layout.
 
 Strict transformations are computed before writes. The native processor lives
 in a separate header so the exact shipped implementation can be host-tested.
@@ -29,6 +29,18 @@ def patch_neon(text):
     return replace_once(text, '#if __ARM_FEATURE_DOTPROD\n',
         '#if defined(__ARM_FEATURE_DOTPROD) && __ARM_FEATURE_DOTPROD\n',
         'RNNoise NEON dot-product feature guard')
+
+
+def patch_denoise(text):
+    # Soften the existing spectral mask before pitch filtering and smoothing.
+    # No undelayed dry mix, extra frame buffer, model, or processing pass.
+    anchor = "    compute_rnn(&st->model, &st->rnn, g, &vad_prob, features, st->arch);\n"
+    return replace_once(text, anchor + "#endif\n", anchor + """    /* Retain more quiet audio: 65% of the original model attenuation. */
+    for (i=0;i<NB_BANDS;i++) {
+      g[i] = 0.35f + 0.65f * g[i];
+    }
+#endif
+""", 'RNNoise gentle spectral mask')
 
 
 def patch_java(text):
@@ -138,9 +150,11 @@ def main():
     cc = root / 'sdk/android/src/jni/pc/peer_connection_factory.cc'
     build = root / 'sdk/android/BUILD.gn'
     neon = vendor / 'src/vec_neon.h'
+    denoise = vendor / 'src/denoise.c'
     writes = [(java, patch_java(java.read_text())), (cc, patch_cc(cc.read_text())),
               (build, patch_build(build.read_text(), vendor)),
               (neon, patch_neon(neon.read_text())),
+              (denoise, patch_denoise(denoise.read_text())),
               (header, Path(__file__).with_name('rnnoise_audio_frame_processor.h').read_text())]
     for path, content in writes:
         path.write_text(content, encoding='utf-8')
@@ -149,3 +163,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

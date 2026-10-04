@@ -1,10 +1,9 @@
 {
-  "signal_tag": "v8.26.4",
-  "signal_commit": "15e5d644924352fa03900969ad6de0e648e5e2d0",
-  "ringrtc_version": "2.71.0",
-  "ringrtc_commit": "4c5fdb312d3c0d6b8e4091e4be5271c020f5792d",
-  "webrtc_tag": "7871f",
-  "webrtc_commit": "3a5cb5f6ea8d223a7b05e4e22ce3f9b77a740f8a",
+  "signal_tag": "v8.28.4",
+  "signal_commit": "d0b314d2d7197c38737c6189d1f6c294e76e247e",
+  "ringrtc_version": "2.72.0",
+  "ringrtc_commit": "a1d2ffed1de6ac5b22458a3dced8374513cc44f8",
+  "webrtc_tag": "7871k",
+  "webrtc_commit": "4b0e77c26cef9905817a2e78cd60e61bde18afa0",
   "rnnoise_commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
-  "model_sha256": "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37"
-}
+  "model_sha256": "0a8755f8e2d834eff6a54714e2baa2724ce24c222222232254714e.4dsd5"e75cf6a

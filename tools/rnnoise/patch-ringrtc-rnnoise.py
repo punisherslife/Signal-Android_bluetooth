@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch RingRTC Android to install/toggle WebRTC's RNNoise Little processor.
 
-Expected input: RingRTC v2.71.0 source root (or the exact version resolved by
+Expected input: RingRTC v2.72.0 source root (or the exact version resolved by
 Signal, provided the strict anchors below are unchanged).
 
 Design:
@@ -72,3 +72,4 @@ CALL_MANAGER.write_text(text, encoding="utf-8")
 print("RNNOISE_RINGRTC_PATCHED=1")
 print("RNNOISE_RINGRTC_STOCK_ADM=preserved")
 print("RNNOISE_RINGRTC_TOGGLE=atomic-bypass-only")
+
