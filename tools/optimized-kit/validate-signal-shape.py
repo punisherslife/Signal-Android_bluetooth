@@ -17,21 +17,23 @@ CHECKS = {
      'CallOverflowPopupWindow__strong_noise_suppression'],
  'service/webrtc/SystemPipSelfPreviewPreference.kt': ['object SystemPipSelfPreviewPreference'],
  'service/webrtc/InCallSelfPreviewPreference.kt': ['object InCallSelfPreviewPreference'],
- 'components/webrtc/v2/PictureInPictureCallScreen.kt': ['hideSelfPreviewInSystemPip', 'CompactSystemPipAudioIndicator'],
+ 'components/webrtc/v2/PictureInPictureCallScreen.kt': ['hideSelfPreviewInSystemPip', 'CompactSystemPipAudioIndicator', 'hideSelfPreviewInSystemPip && showCameraIndicator &&'],
  'components/webrtc/v2/MoveableRemoteVideoRenderer.kt': ['onSwapClick', 'RemoteParticipantContent'],
  'components/webrtc/v2/CallScreen.kt': ['oneToOneSwapActive', 'onClick = onLocalPictureInPictureClicked',
      'onSwapClick = onLocalPictureInPictureFocusClicked',
-     'showSelfPreviewInCall by InCallSelfPreviewPreference.shown.collectAsState()'],
+     'selfPreviewPreference by InCallSelfPreviewPreference.shown.collectAsState()'],
  'components/webrtc/v2/WebRtcCallViewModel.kt': ['MediaProjection continues independently', 'returnOneToOneSwapToExpanded'],
 }
 RNNOISE = {
  'webrtc/audio/SignalAudioManager.kt': ['fun isHighQualityBluetoothAudioEnabled(): Boolean', '@Volatile'],
- 'webrtc/locks/LockManager.java': ['public synchronized Boolean getProximityOverride()'],
+ 'webrtc/locks/LockManager.java': ['public synchronized Boolean getProximityOverride()', 'onAudioRouteChanged(boolean handset, boolean resetOverride)', 'proximityLock.release(!proximityDisabled)'],
+ 'webrtc/locks/ProximityLock.java': ['waitForNoProximity ? PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY : 0'],
  'service/webrtc/SignalCallManager.java': ['public Boolean getProximityOverride()', 'RNNoise Little'],
  'components/webrtc/v2/ComposeCallScreenMediator.kt': [
      'highQualityBluetoothAudioEnabled = ActiveCallManager.isHighQualityBluetoothAudioEnabled()',
-     'proximityOverride = AppDependencies.signalCallManager.proximityOverride'],
- 'components/webrtc/v2/CallScreen.kt': ['signalCallManager.proximityOverride',
+     'proximityOverride = AppDependencies.signalCallManager.proximityOverride',
+     'baseCallControlsState.copy(skipHiddenState = false)'],
+ 'components/webrtc/v2/CallScreen.kt': ['signalCallManager.isProximityEnabled',
      'var swappedRemoteExpanded by remember(oneToOneSwapActive, oneToOneRemoteParticipant?.callParticipantId)',
      'val oneToOneSwapActive = showSelfPreviewInCall &&',
      '!callScreenState.isLocalScreenSharing', '!singleRemoteParticipant.isScreenSharing',
@@ -77,3 +79,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

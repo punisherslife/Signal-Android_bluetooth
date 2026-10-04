@@ -41,7 +41,7 @@ PY
   APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
   mkdir -p "$KIT/dist"
   ALIGNED="$KIT/dist/aligned-unsigned.apk"
-  OUT="$KIT/dist/Signal-v8.26.4-hq-rnnoise-little-${ARCHS}.apk"
+  OUT="$KIT/dist/Signal-v8.28.4-hq-rnnoise-little-${ARCHS}.apk"
   "$ZIPALIGN" -f -P 16 4 "$APK" "$ALIGNED"
   "$APKSIGNER" sign --ks "$KEY" --ks-key-alias "$FORK_KEY_ALIAS" \
     --ks-pass env:FORK_KEYSTORE_PASSWORD --key-pass env:EFFECTIVE_KEY_PASSWORD \
@@ -54,3 +54,4 @@ PY
 else
   echo "Unknown phase: $PHASE" >&2; exit 2
 fi
+
