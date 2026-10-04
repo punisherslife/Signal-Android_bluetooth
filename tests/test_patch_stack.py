@@ -94,8 +94,8 @@ with tempfile.TemporaryDirectory() as t:
     assert 'if (!isScreenSharing) {\n      SelfPreviewMenu()\n    }' in popup
     assert 'if (!showInPip) {\n        DropdownMenuItem(' in popup
     pip=(root/'app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/PictureInPictureCallScreen.kt').read_text()
-    assert 'hideSelfPreviewInSystemPip && showCameraIndicator &&' in pip
-    assert 'localParticipant.isVideoEnabled && !localParticipant.isScreenSharing' in pip
+    assert 'hideSelfPreviewInSystemPip && showCameraIndicator &&' in ' '.join(pip.split())
+    assert 'localParticipant.isVideoEnabled && !localParticipant.isScreenSharing' in ' '.join(pip.split())
     assert '.align(AbsoluteAlignment.TopLeft)' in pip
     assert 'callScreenState.isLocalScreenSharing || localParticipant.isScreenSharing || selfPreviewPreference' in screen
     assert 'proximityEnabled,\n' in screen and 'isProximitySensorEnabled = proximityEnabled' in screen
