@@ -17,7 +17,7 @@ CHECKS = {
      'CallOverflowPopupWindow__strong_noise_suppression'],
  'service/webrtc/SystemPipSelfPreviewPreference.kt': ['object SystemPipSelfPreviewPreference'],
  'service/webrtc/InCallSelfPreviewPreference.kt': ['object InCallSelfPreviewPreference'],
- 'components/webrtc/v2/PictureInPictureCallScreen.kt': ['hideSelfPreviewInSystemPip', 'CompactSystemPipAudioIndicator', 'hideSelfPreviewInSystemPip && showCameraIndicator &&'],
+ 'components/webrtc/v2/PictureInPictureCallScreen.kt': ['hideSelfPreviewInSystemPip', 'CompactSystemPipAudioIndicator', 'showCameraIndicator &&'],
  'components/webrtc/v2/MoveableRemoteVideoRenderer.kt': ['onSwapClick', 'RemoteParticipantContent'],
  'components/webrtc/v2/CallScreen.kt': ['oneToOneSwapActive', 'onClick = onLocalPictureInPictureClicked',
      'onSwapClick = onLocalPictureInPictureFocusClicked',
