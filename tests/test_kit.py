@@ -43,8 +43,8 @@ def fake_aar(path, abis=('arm64-v8a',)):
 
 def fake_signal(root, abis=('arm64-v8a',)):
     for p in ('gradle','app/build/hq-gain','app/libs'):(root/p).mkdir(parents=True,exist_ok=True)
-    (root/'gradle/libs.versions.toml').write_text('signal-ringrtc = "org.signal:ringrtc-android:2.71.0"\n')
-    (root/'app/build/hq-gain/ringrtc-version.txt').write_text('2.71.0\n')
+    (root/'gradle/libs.versions.toml').write_text('signal-ringrtc = "org.signal:ringrtc-android:2.72.0"\n')
+    (root/'app/build/hq-gain/ringrtc-version.txt').write_text('2.72.0\n')
     (root/'app/build/hq-gain/ringrtc-direct-dependencies.txt').write_text('')
     (root/'app/build.gradle.kts').write_text('  implementation(libs.signal.ringrtc)\nabiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")\ninclude("armeabi-v7a", "arm64-v8a", "x86", "x86_64")\n')
     fake_aar(root/'app/libs'/HANDOFF['AAR'], abis)
@@ -162,3 +162,4 @@ class KitTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
+

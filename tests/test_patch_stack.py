@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise patch composition and rollback on files from the real pinned source.
 
-Usage: python3 tests/test_patch_stack.py /path/to/clean/Signal-v8.26.4
+Usage: python3 tests/test_patch_stack.py /path/to/clean/Signal-v8.28.4
 Only the patch-target files are copied. The supplied checkout is never edited.
 """
 import ast
@@ -90,6 +90,22 @@ with tempfile.TemporaryDirectory() as t:
     assert 'onClick = onSwapClick' in renderer
     assert 'onClick = onToggleCameraDirectionClick' in renderer
     assert 'WebRtcLocalRenderState.FOCUSED' not in renderer
+    popup=(root/'app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/AdditionalActionsPopup.kt').read_text()
+    assert 'if (!isScreenSharing) {\n      SelfPreviewMenu()\n    }' in popup
+    assert 'if (!showInPip) {\n        DropdownMenuItem(' in popup
+    pip=(root/'app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/PictureInPictureCallScreen.kt').read_text()
+    assert 'hideSelfPreviewInSystemPip && showCameraIndicator &&' in pip
+    assert 'localParticipant.isVideoEnabled && !localParticipant.isScreenSharing' in pip
+    assert '.align(AbsoluteAlignment.TopLeft)' in pip
+    assert 'callScreenState.isLocalScreenSharing || localParticipant.isScreenSharing || selfPreviewPreference' in screen
+    assert 'proximityEnabled,\n' in screen and 'isProximitySensorEnabled = proximityEnabled' in screen
+    assert 'isLocalVideoLandscape = previewVideoLandscape' in screen
+    assert '.windowInsetsPadding(WindowInsets.systemBarsIgnoringVisibility)' in renderer
+    mediator=(root/'app/src/main/java/org/thoughtcrime/securesms/components/webrtc/v2/ComposeCallScreenMediator.kt').read_text()
+    assert 'baseCallControlsState.copy(skipHiddenState = false)' in mediator
+    assert mediator.index('val callControlsState = remember') < mediator.index('CallScreenController.rememberCallScreenController(')
+    active=(root/'app/src/main/java/org/thoughtcrime/securesms/service/webrtc/ActiveCallManager.kt').read_text()
+    assert active.index('lockManager.onAudioRouteChanged(') < active.index('callManager.onAudioDeviceChanged(activeDevice, devices)')
     applied=snapshot(root);apply(root,success=False);assert applied==snapshot(root)
     # Restore fixture, introduce late source drift, then ensure 0001..0009 writes
     # are rolled back along with generated files when 0010 refuses the shape.
@@ -118,3 +134,4 @@ with tempfile.TemporaryDirectory() as t:
     (control/'patches/0010-preview-proximity-state-fix.py').unlink()
     apply(root,control,success=False);assert remote_drift==snapshot(root)
 print('PASS: ten patches on real source; only approved fixed failure logs; swap source integration; safe repeat refusal; late-failure rollback; remote-renderer preflight; missing-file preflight')
+

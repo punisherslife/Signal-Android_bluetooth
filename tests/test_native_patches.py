@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test strict native transforms on pinned sources, without downloading weights.
 
-Usage: test_native_patches.py <WebRTC-7871f> <RingRTC-2.71.0>
+Usage: test_native_patches.py <WebRTC-7871k> <RingRTC-2.72.0>
 The test uses marked vendor placeholders ONLY to exercise patch construction.
 It does not compile RNNoise or claim an Android/native integration build.
 """
@@ -39,12 +39,14 @@ with tempfile.TemporaryDirectory() as t:
     for rel in ['include/rnnoise.h','src/rnnoise_data.h','COPYING']+['src/'+n for n in mod['C_SOURCES']]:
         p=vendor/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('/* shape fixture only */\n')
     (vendor/'src/vec_neon.h').write_text('/* guard fixture only */\n#if __ARM_FEATURE_DOTPROD\n#endif\n')
+    (vendor/'src/denoise.c').write_text('/* mask fixture only */\n#if !TRAINING\n    compute_rnn(&st->model, &st->rnn, g, &vad_prob, features, st->arch);\n#endif\n')
     original=snapshot(root);run(patch,root)
     gn=(root/'sdk/android/BUILD.gn').read_text()
     assert 'rtc_library("rnnoise_little")' in gn
     assert '"../../api/audio:audio_frame_api"' in gn
     assert 'src/jni/pc/rnnoise_audio_frame_processor.h' in gn
     assert '#if defined(__ARM_FEATURE_DOTPROD) && __ARM_FEATURE_DOTPROD' in (vendor/'src/vec_neon.h').read_text()
+    assert 'g[i] = 0.35f + 0.65f * g[i];' in (vendor/'src/denoise.c').read_text()
     patched=snapshot(root);run(patch,root,False);assert snapshot(root)==patched
     for rel in set(patched)-set(original):(root/rel).unlink()
     for rel,b in original.items():(root/rel).write_bytes(b)
@@ -59,3 +61,4 @@ with tempfile.TemporaryDirectory() as t:
     assert 'Log.i(TAG, "RNNoise' not in text
     run(patch,root,False);assert p.read_text()==text
 print('PASS: native transforms on pinned sources; explicit GN dependencies; repeated/drifted patch refusal; stock ADM retained')
+
