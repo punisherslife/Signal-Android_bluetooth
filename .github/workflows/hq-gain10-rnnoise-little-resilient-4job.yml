@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: Audited Signal tag (this kit supports v8.26.4)
+        description: Audited Signal tag (this kit supports v8.28.4)
         type: string
         required: true
-        default: v8.26.4
+        default: v8.28.4
       native_archs:
         description: arm64 makes a smaller phone-only build; all builds all four ABIs
         type: choice
@@ -45,6 +45,9 @@ jobs:
       - uses: ./.github/actions/prepare-signal
         with:
           commit: ${{ steps.pins.outputs.commit }}
+      - name: Check proximity route behavior
+        shell: bash
+        run: python3 tests/test_proximity.py signal
       - name: Resolve exact RingRTC dependency and Maven dependencies
         working-directory: signal
         shell: bash
@@ -242,3 +245,4 @@ jobs:
             signal/**/build/reports
             signal/**/build/test-results
           if-no-files-found: ignore
+
