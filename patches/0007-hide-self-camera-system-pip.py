@@ -267,8 +267,10 @@ private val PIP_METRICS_COMPACT_AUDIO_INNER_PADDING = 4.dp
       )
     }
 
-    if (hideSelfPreviewInSystemPip && showCameraIndicator &&
-      localParticipant.isVideoEnabled && !localParticipant.isScreenSharing
+    if (hideSelfPreviewInSystemPip &&
+      showCameraIndicator &&
+      localParticipant.isVideoEnabled &&
+      !localParticipant.isScreenSharing
     ) {
       Icon(
         imageVector = ImageVector.vectorResource(R.drawable.symbol_video_24),

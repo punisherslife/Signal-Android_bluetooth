@@ -187,10 +187,14 @@ def patch_compose_mediator(text: str) -> str:
     controls = """      val showSelfPreview by org.thoughtcrime.securesms.service.webrtc.InCallSelfPreviewPreference.shown.collectAsStateWithLifecycle()
       val singleRemote = callParticipantsPagerState.callParticipants.singleOrNull()
       val swapCanHideControls = webRtcCallState.inOngoingCall &&
-        showSelfPreview && !baseCallControlsState.isGroupCall &&
-        !callScreenState.isLocalScreenSharing && !isLocalScreenSharing && !callParticipantsState.localParticipant.isScreenSharing &&
+        showSelfPreview &&
+        !baseCallControlsState.isGroupCall &&
+        !callScreenState.isLocalScreenSharing &&
+        !isLocalScreenSharing &&
+        !callParticipantsState.localParticipant.isScreenSharing &&
         callParticipantsState.localParticipant.isVideoEnabled &&
-        singleRemote != null && !singleRemote.isScreenSharing &&
+        singleRemote != null &&
+        !singleRemote.isScreenSharing &&
         localRenderState == WebRtcLocalRenderState.FOCUSED
       val callControlsState = remember(baseCallControlsState, swapCanHideControls) {
         if (swapCanHideControls) baseCallControlsState.copy(skipHiddenState = false) else baseCallControlsState
